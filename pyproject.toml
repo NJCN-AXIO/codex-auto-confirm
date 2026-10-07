@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-auto-confirm"
+version = "1.0.0"
+description = "Windows watchdog for OpenAI Codex CLI: auto-confirm permission prompts and self-heal 429/5xx errors without stealing focus."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "NJCN-AXIO" }]
+keywords = ["codex", "openai", "watchdog", "rpa", "windows", "automation"]
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "pynput>=1.7.0",
+    "pystray>=0.19.0",
+    "pillow>=10.0.0",
+]
+
+# NOTE: this project is normally run as a PyInstaller-packaged EXE or by
+# invoking scripts/codex_auto_confirm.py directly.  The pyproject.toml ships
+# for metadata/tooling; we do not enforce a pip-installable layout.

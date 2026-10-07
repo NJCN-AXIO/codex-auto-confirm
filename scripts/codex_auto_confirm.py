@@ -83,7 +83,15 @@ DESKTOP_POLL_SECONDS = max(
 # RECOVERY_MAX_ATTEMPTS setting is retained for environment compatibility but
 # does not cap status-gated recovery anymore.
 RECOVERY_RETRY_SECONDS = None
-UIA_HELPER_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "codex_terminal_uia_reader.ps1")
+# Locate the bundled UIA helper.  When frozen by PyInstaller, resources are
+# unpacked into sys._MEIPASS; otherwise sit next to this .py file.
+if getattr(sys, "frozen", False):
+    UIA_HELPER_SCRIPT_PATH = os.path.join(
+        getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)),
+        "codex_terminal_uia_reader.ps1",
+    )
+else:
+    UIA_HELPER_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "codex_terminal_uia_reader.ps1")
 POWERSHELL_EXE = os.environ.get("CODEX_AUTO_CONFIRM_POWERSHELL", "powershell.exe")
 
 VK_RETURN = 0x0D
@@ -202,6 +210,29 @@ STREAM_DISCONNECT_MARKER = "stream disconnected before completion"
 STREAM_DECODE_MARKER = "error decoding response body"
 CODEX_TERMINAL_MARKERS = ("openai codex", "ask codex to do anything", "codex cli")
 CODEX_TITLE_MARKER = re.compile(r"(?<![a-z0-9])codex(?![a-z0-9])")
+
+# Recoverable-error "continue" message.  Older Codex builds show the prompt in
+# Chinese and expect "继续执行"; English builds expect "continue".  The text is
+# picked per-terminal from the visible viewport (any CJK glyph → Chinese), and
+# can be pinned explicitly with CODEX_AUTO_CONFIRM_RECOVERY_TEXT.
+RECOVERY_TEXT_ZH = "继续执行"
+RECOVERY_TEXT_EN = "continue"
+CONFIGURED_RECOVERY_TEXT = os.environ.get("CODEX_AUTO_CONFIRM_RECOVERY_TEXT") or None
+
+
+def pick_recovery_text(viewport_text: str) -> str:
+    """Return the 'continue' command that matches the terminal's UI language.
+
+    An explicit CODEX_AUTO_CONFIRM_RECOVERY_TEXT always wins.  Otherwise a single
+    CJK glyph anywhere in the visible viewport is treated as evidence that the
+    Codex UI is localized to Chinese.
+    """
+    if CONFIGURED_RECOVERY_TEXT:
+        return CONFIGURED_RECOVERY_TEXT
+    for ch in viewport_text or "":
+        if "一" <= ch <= "鿿":
+            return RECOVERY_TEXT_ZH
+    return RECOVERY_TEXT_EN
 
 # Since codex-cli 0.15x the approval UI is rendered inside the TUI instead of
 # changing the Windows Terminal title to ``Action Required``.  Keep the
@@ -1110,8 +1141,10 @@ def send_text_via_attached_post(hwnd: int | None, text: str) -> bool:
     )
 
 
-def send_continue(hwnd: int | None) -> bool:
-    if not send_text_via_attached_post(hwnd, "\u7ee7\u7eed\u6267\u884c"):
+def send_continue(hwnd: int | None, text: str | None = None) -> bool:
+    if text is None:
+        text = CONFIGURED_RECOVERY_TEXT or RECOVERY_TEXT_ZH
+    if not send_text_via_attached_post(hwnd, text):
         return False
     return send_enter(hwnd)
 
@@ -1147,7 +1180,7 @@ def process_codex_recovery_snapshots(
         except (TypeError, ValueError):
             continue
         if hwnd > 0:
-            match = (signature, hwnd)
+            match = (signature, hwnd, text)
             break
 
     if status_active:
@@ -1163,11 +1196,15 @@ def process_codex_recovery_snapshots(
         tracker.observe_no_error()
         return False, None, None
 
-    signature, hwnd = match
+    signature, hwnd, viewport_text = match
     if not tracker.observe_error(signature):
         return False, signature, None
+    recovery_text = pick_recovery_text(viewport_text)
     try:
-        delivered = bool(sender(hwnd))
+        try:
+            delivered = bool(sender(hwnd, recovery_text))
+        except TypeError:
+            delivered = bool(sender(hwnd))
     except Exception:
         delivered = False
     tracker.record_delivery(delivered)
@@ -1500,18 +1537,32 @@ def on_press(key):
 
 
 def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description="Codex CLI auto-confirm watchdog")
+    parser.add_argument(
+        "--tray",
+        action="store_true",
+        help="Run as a background system-tray app (no console window). "
+             "Default when launched as a PyInstaller exe.",
+    )
+    args, _unknown = parser.parse_known_args()
+
+    tray_mode = args.tray or bool(getattr(sys, "frozen", False))
+
     if not acquire_single_instance():
-        print("  Another Codex auto-confirm monitor is already running")
+        if not tray_mode:
+            print("  Another Codex auto-confirm monitor is already running")
         return 0
 
-    print("=" * 55)
-    print("  Codex CLI Auto Confirm")
-    _, hwnd, _ = find_codex_process()
-    print(f"  Codex: {'found' if hwnd else 'not found'}")
-    print(f"  Trigger title: {ACTION_REQUIRED_TITLE}")
-    print(f"  Auto Confirm: {'ON' if auto_confirm else 'OFF'}")
-    print("  F9=toggle  F10=exit")
-    print("=" * 55)
+    if not tray_mode:
+        print("=" * 55)
+        print("  Codex CLI Auto Confirm")
+        _, hwnd, _ = find_codex_process()
+        print(f"  Codex: {'found' if hwnd else 'not found'}")
+        print(f"  Trigger title: {ACTION_REQUIRED_TITLE}")
+        print(f"  Auto Confirm: {'ON' if auto_confirm else 'OFF'}")
+        print("  F9=toggle  F10=exit")
+        print("=" * 55)
 
     try:
         try:
@@ -1521,6 +1572,33 @@ def main() -> int:
             return 1
 
         threading.Thread(target=auto_enter_loop, daemon=True).start()
+
+        if tray_mode:
+            # Global hotkeys still work, but on a background thread.
+            threading.Thread(
+                target=lambda: Listener(on_press=on_press).run(),
+                daemon=True,
+            ).start()
+            from tray import run_tray
+            import autostart
+
+            def _toggle():
+                global auto_confirm
+                auto_confirm = not auto_confirm
+
+            def _shutdown():
+                global running
+                running = False
+
+            run_tray(
+                is_on=lambda: auto_confirm,
+                toggle=_toggle,
+                is_autostart=autostart.is_enabled,
+                set_autostart=lambda on: autostart.enable() if on else autostart.disable(),
+                shutdown=_shutdown,
+            )
+            return 0
+
         with Listener(on_press=on_press) as listener:
             listener.join()
 

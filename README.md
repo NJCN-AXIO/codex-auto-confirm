@@ -58,17 +58,30 @@ yank focus away from whatever you are doing.
   a crash, but respects a clean <kbd>F10</kbd> exit.
 - **No screenshots, no OCR**: it reads the terminal through the native Windows
   UIA TextPattern API, so it works on any DPI / font size.
+- **Multi-language recovery**: detects Chinese vs English Codex UI and sends
+  `继续执行` or `continue` accordingly (override with
+  `CODEX_AUTO_CONFIRM_RECOVERY_TEXT`).
+- **System tray**: green/grey icon shows ON/OFF; right-click to toggle, enable
+  Windows startup, or quit.
 - **(Untested) Codex Desktop "Allow once" via CDP** — code included, not
   verified by the author. See the Safety notes before relying on it.
 
 ## Requirements
 
-- Windows 10 / 11
-- Python 3.10+ (64-bit)
+- Windows 10 / 11 (64-bit)
 - Windows Terminal (for the TUI approval path); the ConPTY fallback also works
-- The `pynput` package (for the global F9/F10 hotkeys)
 
-## Install
+## Install — easiest (EXE)
+
+Download `codex-auto-confirm.exe` from the
+[latest release](https://github.com/NJCN-AXIO/codex-auto-confirm/releases/latest)
+and double-click it. A small green icon appears in the system tray; that's it.
+No Python install required.
+
+Right-click the tray icon to toggle auto-confirm, enable/disable Windows
+startup, or quit.
+
+## Install — from source
 
 ```powershell
 git clone https://github.com/NJCN-AXIO/codex-auto-confirm.git
@@ -82,10 +95,16 @@ launched on demand by the Python monitor.
 
 ## Run
 
-Double-click `scripts\codex_auto_confirm.bat`, or from a terminal:
+Console mode (with visible log window):
 
 ```powershell
 python scripts\codex_auto_confirm.py
+```
+
+Tray mode (no console window):
+
+```powershell
+python scripts\codex_auto_confirm.py --tray
 ```
 
 You should see:
@@ -110,6 +129,8 @@ the background.
 | <kbd>F9</kbd> | Toggle auto-confirm on / off (also resets the recovery latch) |
 | <kbd>F10</kbd> | Exit cleanly (the `.bat` supervisor will **not** restart a clean exit) |
 
+In tray mode, the same toggle is also available from the right-click menu.
+
 ## Configuration
 
 All tuning is via environment variables — no config file to edit.
@@ -120,6 +141,7 @@ All tuning is via environment variables — no config file to edit.
 | `CODEX_AUTO_CONFIRM_ACTION_TITLE` | `Action Required` | Legacy title that signals a pending approval. |
 | `CODEX_AUTO_CONFIRM_PROCESS_NAMES` | `WindowsTerminal.exe,conhost.exe,codex.exe` | Process names eligible for Codex-terminal detection. |
 | `CODEX_AUTO_CONFIRM_CDP_PORT` | `27374` | Local CDP port used for the Codex Desktop "Allow once" dialog. |
+| `CODEX_AUTO_CONFIRM_RECOVERY_TEXT` | _(auto)_ | Pin the exact "continue" command sent after a recoverable error. Default: auto-detect Chinese vs English. |
 | `CODEX_AUTO_CONFIRM_RECOVERY_POLL_SECONDS` | `0.25` | How often the UIA scanner wakes up. |
 | `CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS` | `1.5` | Timeout for one in-flight UIA scan. |
 | `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` | `5.0` | How long a posted "continue" waits for an authoritative `Working` status before re-arming. |
@@ -167,15 +189,21 @@ codex-auto-confirm/
 ├── scripts/
 │   ├── codex_auto_confirm.py          # The watchdog (main entry point)
 │   ├── codex_terminal_uia_reader.ps1  # UIA TextPattern reader (child process)
-│   ├── codex_auto_confirm.bat         # Supervised launcher / restart loop
+│   ├── tray.py                       # System-tray UI (pystray)
+│   ├── autostart.py                  # Windows Run-key startup toggle
+│   ├── codex_auto_confirm.bat        # Supervised launcher / restart loop
 │   ├── test_codex_auto_confirm.py
 │   ├── test_codex_auto_confirm_guards.py
 │   ├── test_codex_auto_confirm_recovery.py
-│   └── test_codex_auto_confirm_desktop.py
+│   ├── test_codex_auto_confirm_desktop.py
+│   └── test_recovery_text.py         # i18n / language detection tests
 ├── docs/
-│   └── RUNBOOK.md                     # Detailed behavior & tuning reference
+│   ├── RUNBOOK.md                    # Detailed behavior & tuning reference
+│   └── demo.gif                      # Animated schematic
+├── pyproject.toml
 ├── requirements.txt
-├── LICENSE                            # MIT
+├── CHANGELOG.md
+├── LICENSE                           # MIT
 └── README.md
 ```
 

@@ -17,3 +17,11 @@ Thumbs.db
 .DS_Store
 .idea/
 .vscode/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Local helper scripts
+_patch.py
