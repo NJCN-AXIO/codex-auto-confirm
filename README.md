@@ -1,20 +1,32 @@
 # codex-auto-confirm
 
-A Windows watchdog for **OpenAI Codex CLI / Codex Desktop** that automatically
-presses <kbd>Enter</kbd> on permission prompts and self-heals transient runtime
-errors — without ever stealing your focus.
+![Tests](https://github.com/NJCN-AXIO/codex-auto-confirm/actions/workflows/test.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 
-> Stop babysitting Codex: let it ask "Allow once?" while you keep working in
+A Windows watchdog for **OpenAI Codex CLI** that automatically presses
+<kbd>Enter</kbd> on permission prompts and self-heals transient runtime errors
+— without ever stealing your focus.
+
+> **Tested on:** Windows Terminal + `codex-cli` 0.156.x. The code also ships a
+> CDP path aimed at the Codex Desktop "Allow once" dialog, but the author has
+> only run the CLI flow end-to-end; the desktop path is included as-is and is
+> community-tested at best.
+
+![demo](docs/demo.gif)
+
+> Stop babysitting Codex: let it ask "Yes, proceed?" while you keep working in
 > another window. When it hits a `429 Too Many Requests`, `502/503/504`, a model
-> capacity error, or a dropped stream, the monitor types `继续执行` /
-> continues for you and waits for the authoritative `Working …` status before
-> it considers the loop recovered.
+> capacity error, or a dropped stream, the monitor types `继续执行` / continues
+> for you and waits for the authoritative `Working …` status before it considers
+> the loop recovered.
 
 ---
 
 ## Why
 
-Codex CLI (≥ 0.15.x) and Codex Desktop periodically interrupt a long session to:
+Codex CLI (≥ 0.15.x) periodically interrupts a long session to:
 
 1. Ask for permission before running a command or applying edits
    (`Would you like to run the following command?` → `Yes, proceed`).
@@ -30,9 +42,8 @@ yank focus away from whatever you are doing.
 
 ## Features
 
-- **One-shot approval auto-confirm** for the new inline TUI menus
-  (`Yes, proceed` / `Yes, just this once`) — and the legacy desktop
-  "Allow once" dialog via CDP.
+- **One-shot approval auto-confirm** for the inline TUI menus
+  (`Yes, proceed` / `Yes, just this once`) — the primary, author-tested path.
 - **Error self-recovery**: on a visible `429` / `5xx` / capacity / stream-error
   line it posts `继续执行` + <kbd>Enter</kbd>, then waits for an authoritative
   `Working (… • esc to interrupt)` or `Compacting context (…)` status before
@@ -47,6 +58,8 @@ yank focus away from whatever you are doing.
   a crash, but respects a clean <kbd>F10</kbd> exit.
 - **No screenshots, no OCR**: it reads the terminal through the native Windows
   UIA TextPattern API, so it works on any DPI / font size.
+- **(Untested) Codex Desktop "Allow once" via CDP** — code included, not
+  verified by the author. See the Safety notes before relying on it.
 
 ## Requirements
 
