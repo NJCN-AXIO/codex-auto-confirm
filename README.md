@@ -1,0 +1,171 @@
+# codex-auto-confirm
+
+A Windows watchdog for **OpenAI Codex CLI / Codex Desktop** that automatically
+presses <kbd>Enter</kbd> on permission prompts and self-heals transient runtime
+errors — without ever stealing your focus.
+
+> Stop babysitting Codex: let it ask "Allow once?" while you keep working in
+> another window. When it hits a `429 Too Many Requests`, `502/503/504`, a model
+> capacity error, or a dropped stream, the monitor types `继续执行` /
+> continues for you and waits for the authoritative `Working …` status before
+> it considers the loop recovered.
+
+---
+
+## Why
+
+Codex CLI (≥ 0.15.x) and Codex Desktop periodically interrupt a long session to:
+
+1. Ask for permission before running a command or applying edits
+   (`Would you like to run the following command?` → `Yes, proceed`).
+2. Surface transient errors that a single "continue" clears —
+   `429 Too Many Requests`, `model at capacity`, `502/503/504 Bad Gateway`,
+   `stream disconnected before completion`.
+
+Leaving Codex unattended means it stalls until you come back. This tool watches
+every Windows Terminal / ConPTY window that hosts Codex and presses the right
+key at the right moment, using **background `PostMessage` delivery** — it never
+calls `SetForegroundWindow`, `SetFocus`, or global `SendInput`, so it will not
+yank focus away from whatever you are doing.
+
+## Features
+
+- **One-shot approval auto-confirm** for the new inline TUI menus
+  (`Yes, proceed` / `Yes, just this once`) — and the legacy desktop
+  "Allow once" dialog via CDP.
+- **Error self-recovery**: on a visible `429` / `5xx` / capacity / stream-error
+  line it posts `继续执行` + <kbd>Enter</kbd>, then waits for an authoritative
+  `Working (… • esc to interrupt)` or `Compacting context (…)` status before
+  re-arming. Stale transcript lines and historical errors are ignored.
+- **Multi-window aware**: each terminal HWND is tracked independently.
+- **Focus-safe**: keyboard input is delivered with `PostMessageW` /
+  `WM_CHAR` directly to the terminal's `InputSite`; the foreground window stays
+  yours.
+- **Edge-triggered**: a prompt is confirmed exactly once until it clears.
+- **Single-instance**: a named Windows mutex prevents duplicate monitors.
+- **Supervised restart**: the `.bat` launcher restarts the Python monitor after
+  a crash, but respects a clean <kbd>F10</kbd> exit.
+- **No screenshots, no OCR**: it reads the terminal through the native Windows
+  UIA TextPattern API, so it works on any DPI / font size.
+
+## Requirements
+
+- Windows 10 / 11
+- Python 3.10+ (64-bit)
+- Windows Terminal (for the TUI approval path); the ConPTY fallback also works
+- The `pynput` package (for the global F9/F10 hotkeys)
+
+## Install
+
+```powershell
+git clone https://github.com/NJCN-AXIO/codex-auto-confirm.git
+cd codex-auto-confirm
+pip install -r requirements.txt
+```
+
+The UIA reader ships as a small PowerShell script
+(`scripts/codex_terminal_uia_reader.ps1`) — no extra install needed, it is
+launched on demand by the Python monitor.
+
+## Run
+
+Double-click `scripts\codex_auto_confirm.bat`, or from a terminal:
+
+```powershell
+python scripts\codex_auto_confirm.py
+```
+
+You should see:
+
+```
+=======================================================
+  Codex CLI Auto Confirm
+  Codex: found
+  Trigger title: action required
+  Auto Confirm: ON
+  F9=toggle  F10=exit
+=======================================================
+```
+
+Start Codex in a Windows Terminal window as usual. Leave this monitor running in
+the background.
+
+## Hotkeys
+
+| Key | Action |
+|-----|--------|
+| <kbd>F9</kbd> | Toggle auto-confirm on / off (also resets the recovery latch) |
+| <kbd>F10</kbd> | Exit cleanly (the `.bat` supervisor will **not** restart a clean exit) |
+
+## Configuration
+
+All tuning is via environment variables — no config file to edit.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CODEX_AUTO_CONFIRM_TITLE` | `codex` | Window-title fragment used by the legacy title-based finder. |
+| `CODEX_AUTO_CONFIRM_ACTION_TITLE` | `Action Required` | Legacy title that signals a pending approval. |
+| `CODEX_AUTO_CONFIRM_PROCESS_NAMES` | `WindowsTerminal.exe,conhost.exe,codex.exe` | Process names eligible for Codex-terminal detection. |
+| `CODEX_AUTO_CONFIRM_CDP_PORT` | `27374` | Local CDP port used for the Codex Desktop "Allow once" dialog. |
+| `CODEX_AUTO_CONFIRM_RECOVERY_POLL_SECONDS` | `0.25` | How often the UIA scanner wakes up. |
+| `CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS` | `1.5` | Timeout for one in-flight UIA scan. |
+| `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` | `5.0` | How long a posted "continue" waits for an authoritative `Working` status before re-arming. |
+| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `0.8` | Repeat interval while the same visible error has no `Working` status yet. |
+| `CODEX_AUTO_CONFIRM_POWERSHELL` | `powershell.exe` | Path to the PowerShell executable used for the UIA helper. |
+
+See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the full list and the exact
+error signatures that trigger recovery.
+
+## Safety notes
+
+- This tool sends <kbd>Enter</kbd> (and, for the Chinese locale, the four
+  characters `继续执行`) **only** after the current UIA/CDP read proves a real
+  one-shot approval or a known transient error is on screen. It does **not**
+  infer completion from a window title or a generic substring.
+- Deny / reject menus, "always allow" options, quoted examples inside the
+  transcript, and historical error lines all fail closed — no keypress is sent.
+- It intentionally does **not** read passwords or type into any field that is
+  not a Codex approval / error prompt.
+- Still, run it only on machines and sessions you control.
+
+## Development
+
+Run the regression suite (no real Codex window needed — everything is mocked):
+
+```powershell
+python -m pytest scripts\ -q
+```
+
+A read-only live probe (prints the currently visible Codex snapshots, sends
+nothing):
+
+```powershell
+python -c "import importlib.util,time; \
+p=r'scripts\codex_auto_confirm.py'; \
+s=importlib.util.spec_from_file_location('m',p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); \
+r=m.CodexTerminalReader(); r.request_scan(); time.sleep(1); \
+v=r.poll(); print([(x.get('title'), x.get('hwnd')) for x in (v or []) if m.eligible_codex_snapshot(x)]); r.close()"
+```
+
+## Project layout
+
+```
+codex-auto-confirm/
+├── scripts/
+│   ├── codex_auto_confirm.py          # The watchdog (main entry point)
+│   ├── codex_terminal_uia_reader.ps1  # UIA TextPattern reader (child process)
+│   ├── codex_auto_confirm.bat         # Supervised launcher / restart loop
+│   ├── test_codex_auto_confirm.py
+│   ├── test_codex_auto_confirm_guards.py
+│   ├── test_codex_auto_confirm_recovery.py
+│   └── test_codex_auto_confirm_desktop.py
+├── docs/
+│   └── RUNBOOK.md                     # Detailed behavior & tuning reference
+├── requirements.txt
+├── LICENSE                            # MIT
+└── README.md
+```
+
+## License
+
+[MIT](LICENSE)
