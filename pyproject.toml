@@ -28,3 +28,27 @@ dependencies = [
 # NOTE: this project is normally run as a PyInstaller-packaged EXE or by
 # invoking scripts/codex_auto_confirm.py directly.  The pyproject.toml ships
 # for metadata/tooling; we do not enforce a pip-installable layout.
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# This watchdog is intentionally fail-safe: any detector thread must not crash
+# the whole monitor, so blind `except Exception` and `except: pass` are by
+# design.  The original code uses compact one-liners in a few places and
+# tests use lambdas as callables; we leave those alone.
+ignore = [
+    "BLE001",   # blind except Exception — fail-safe watchdog design
+    "S110",     # try-except-pass — same
+    "B023",     # lambda closures in tests
+    "DTZ005",   # local timestamps in log header
+    "SIM115",   # open() in _setup_log_tee needs a long-lived file handle
+    "UP031",    # % formatting in the log header
+    "E701",     # compact one-liners in original code
+    "E702",     # semicolon one-liners in original code/tests
+    "E731",     # lambda callables in tests
+    "E501",     # long lines in embedded JS / websocket calls / dense tests
+]
+

@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 MODULE_PATH = Path(__file__).with_name("codex_auto_confirm.py")
 STREAM_ERROR = (
     "■ stream disconnected before completion: Transport error: network error: "

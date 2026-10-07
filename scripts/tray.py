@@ -6,8 +6,7 @@ when the user asked for ``--tray`` (this is the default under PyInstaller).
 """
 from __future__ import annotations
 
-import threading
-from typing import Callable
+from collections.abc import Callable
 
 from PIL import Image, ImageDraw
 
@@ -34,7 +33,8 @@ def run_tray(
 ) -> None:
     """Block until the user picks Exit from the tray menu."""
     import pystray
-    from pystray import MenuItem as Item, Menu
+    from pystray import Menu
+    from pystray import MenuItem as Item
 
     icon_ref: dict[str, pystray.Icon] = {}
 
@@ -55,6 +55,19 @@ def run_tray(
         shutdown()
         icon.stop()
 
+    def on_open_logs(icon, item):
+        import os
+        import subprocess
+        log_dir = os.path.join(
+            os.environ.get("APPDATA", os.path.expanduser("~")),
+            "codex-auto-confirm",
+        )
+        os.makedirs(log_dir, exist_ok=True)
+        try:
+            os.startfile(log_dir)  # type: ignore[attr-defined]
+        except Exception:
+            subprocess.Popen(["explorer", log_dir])
+
     menu = Menu(
         Item(
             lambda item: f"Auto-confirm: {'ON' if is_on() else 'OFF'}",
@@ -67,6 +80,7 @@ def run_tray(
             checked=lambda item: is_autostart(),
         ),
         Menu.SEPARATOR,
+        Item("Open log folder", on_open_logs),
         Item("Exit", on_exit),
     )
 

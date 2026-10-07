@@ -1,13 +1,12 @@
+import ctypes
 import importlib.util
 import os
 import subprocess
 import sys
 import tempfile
-import ctypes
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
 
 MODULE_PATH = Path(__file__).with_name("codex_auto_confirm.py")
 BATCH_PATH = MODULE_PATH.with_suffix(".bat")

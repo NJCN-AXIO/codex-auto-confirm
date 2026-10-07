@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build EXE
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name codex-auto-confirm --add-data "scripts/codex_terminal_uia_reader.ps1;." scripts/codex_auto_confirm.py
+
+      - name: Upload EXE to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/codex-auto-confirm.exe

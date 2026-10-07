@@ -16,9 +16,9 @@ import queue
 import re
 import subprocess
 import sys
-import urllib.request
 import threading
 import time
+import urllib.request
 from ctypes import wintypes
 
 if sys.platform == "win32":
@@ -1536,7 +1536,53 @@ def on_press(key):
     return None
 
 
+def _setup_log_tee() -> str:
+    r"""Mirror stdout/stderr to %APPDATA%\codex-auto-confirm\watchdog.log.
+
+    Returns the log file path.  In windowed (PyInstaller) mode the original
+    stdout is None; the tee then only writes to the file.  Skipped under pytest
+    so test capture keeps working.
+    """
+    if "_pytest" in sys.modules or "pytest" in sys.modules:
+        return ""
+    import datetime
+    log_dir = os.path.join(
+        os.environ.get("APPDATA", os.path.expanduser("~")),
+        "codex-auto-confirm",
+    )
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "watchdog.log")
+
+    class _Tee:
+        def __init__(self, *streams):
+            self._streams = [st for st in streams if st is not None]
+        def write(self, data):
+            for st in self._streams:
+                try:
+                    st.write(data)
+                except Exception:
+                    pass
+        def flush(self):
+            for st in self._streams:
+                try:
+                    st.flush()
+                except Exception:
+                    pass
+        def __getattr__(self, name):
+            return getattr(self._streams[0], name) if self._streams else None
+
+    try:
+        f = open(log_path, "a", encoding="utf-8", errors="replace")
+        f.write("\n===== session start %s =====\n" % datetime.datetime.now().isoformat(timespec="seconds"))
+        sys.stdout = _Tee(sys.__stdout__, f)
+        sys.stderr = _Tee(sys.__stderr__, f)
+    except Exception:
+        pass
+    return log_path
+
+
 def main() -> int:
+    _setup_log_tee()
     import argparse
     parser = argparse.ArgumentParser(description="Codex CLI auto-confirm watchdog")
     parser.add_argument(
@@ -1579,8 +1625,8 @@ def main() -> int:
                 target=lambda: Listener(on_press=on_press).run(),
                 daemon=True,
             ).start()
-            from tray import run_tray
             import autostart
+            from tray import run_tray
 
             def _toggle():
                 global auto_confirm
