@@ -9,6 +9,8 @@ and retries a real Enter keypress while the prompt remains visible.
 
 from __future__ import annotations
 
+__version__ = "1.1.0"
+
 import ctypes
 import json
 import os
@@ -1585,6 +1587,11 @@ def main() -> int:
     _setup_log_tee()
     import argparse
     parser = argparse.ArgumentParser(description="Codex CLI auto-confirm watchdog")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"codex-auto-confirm {__version__}",
+    )
     parser.add_argument(
         "--tray",
         action="store_true",

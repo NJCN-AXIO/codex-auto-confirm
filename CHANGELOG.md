@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-10-07
+
+### Added
+- **File logging**: stdout/stderr are now teed to
+  `%APPDATA%\codex-auto-confirm\watchdog.log`; the tray menu has a new
+  "Open log folder" item.
+- **`--version` flag** on the command line.
+- **`scripts/uninstall.bat`**: removes the autostart registry entry and
+  kills any running EXE.
+- **GitHub issue templates** for bug reports and feature requests.
+- **`ruff` lint** now runs in CI; rules are configured in `pyproject.toml`.
+- **Automatic release workflow**: pushing a `v*` tag builds the EXE on
+  `windows-latest` and attaches it to the GitHub release.
+
+### Docs
+- README: new Troubleshooting and Uninstall sections.
+
+[1.1.0]: https://github.com/NJCN-AXIO/codex-auto-confirm/releases/tag/v1.1.0
+
 ## [1.0.0] - 2026-10-07
 
 ### Added

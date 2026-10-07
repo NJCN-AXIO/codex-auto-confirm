@@ -163,6 +163,29 @@ error signatures that trigger recovery.
   not a Codex approval / error prompt.
 - Still, run it only on machines and sessions you control.
 
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Console says `Codex: not found` | Start Codex in a **Windows Terminal** window first. The watchdog only detects ConPTY / Windows Terminal hosting `codex`. |
+| Prompt appears but no auto-confirm | Press <kbd>F9</kbd> to make sure auto-confirm is `ON`; check the tray icon colour. |
+| Tray icon doesn't appear on first run | The EXE starts minimized to tray. Look in the overflow chevron (the `^` on the taskbar) and drag the icon out if you want it pinned. |
+| Nothing happens on a `429` / `503` | Your Codex UI may be in a language other than English/Chinese. Set `CODEX_AUTO_CONFIRM_RECOVERY_TEXT` to the exact "continue" command your Codex expects. |
+| I want to see what it is doing | Open `%APPDATA%\codex-auto-confirm\watchdog.log`, or right-click the tray icon → **Open log folder**. |
+| It keeps relaunching after I close it | You ran `codex_auto_confirm.bat`, which is a supervised launcher. Press <kbd>F10</kbd> inside the console for a clean exit, or close the window and wait 2 s — the bat will restart it; press Ctrl+C in the console instead to stop the loop. |
+| `Another monitor is already running` | A previous instance (or tray) is still alive. Right-click its tray icon → Exit, or kill `codex-auto-confirm.exe` in Task Manager. |
+
+## Uninstall
+
+Run `scripts\uninstall.bat` (or, for the EXE, right-click and Run as
+administrator is **not** needed — everything is per-user). It will:
+
+1. Remove the `CodexAutoConfirm` Windows autostart entry.
+2. Terminate any running `codex-auto-confirm.exe`.
+
+Then delete the EXE / source folder you downloaded. Logs stay at
+`%APPDATA%\codex-auto-confirm\`; delete that folder manually for a full clean.
+
 ## Development
 
 Run the regression suite (no real Codex window needed — everything is mocked):
@@ -192,6 +215,7 @@ codex-auto-confirm/
 │   ├── tray.py                       # System-tray UI (pystray)
 │   ├── autostart.py                  # Windows Run-key startup toggle
 │   ├── codex_auto_confirm.bat        # Supervised launcher / restart loop
+│   ├── uninstall.bat                 # Remove autostart + kill running EXE
 │   ├── test_codex_auto_confirm.py
 │   ├── test_codex_auto_confirm_guards.py
 │   ├── test_codex_auto_confirm_recovery.py

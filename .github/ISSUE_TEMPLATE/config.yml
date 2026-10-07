@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions
+    url: https://github.com/NJCN-AXIO/codex-auto-confirm/issues
+    about: Please open an issue; there is no separate discussion forum yet.
