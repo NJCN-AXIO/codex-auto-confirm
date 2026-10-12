@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-12
+
+### Fixed / 修复
+- Prevented repeated continuation messages when successful input delivery is
+  followed by delayed UIA status readback.
+- 修复成功发送后 UIA 状态读取延迟导致“继续执行”连续排队发送的问题。
+
+### Added / 新增
+- Retry explicit account-pool `auth_unavailable` 503 errors every five seconds
+  until an authoritative working or compacting status appears.
+- 对明确的账号池 `auth_unavailable` 503 错误每五秒重试，直至出现权威的工作中
+  或上下文压缩状态。
+- Added a bilingual project overview and recovery-policy explanation.
+- 增加中英双语项目简介与恢复策略说明。
+
+[1.2.0]: https://github.com/NJCN-AXIO/codex-auto-confirm/releases/tag/v1.2.0
+
 ## [1.1.0] - 2026-10-07
 
 ### Added

@@ -9,7 +9,7 @@ and retries a real Enter keypress while the prompt remains visible.
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import ctypes
 import json

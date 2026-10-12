@@ -9,6 +9,21 @@ A Windows watchdog for **OpenAI Codex CLI** that automatically presses
 <kbd>Enter</kbd> on permission prompts and self-heals transient runtime errors
 — without ever stealing your focus.
 
+### Quick summary / 快速了解
+
+**English:** A Windows watchdog for OpenAI Codex CLI that safely auto-confirms
+one-shot prompts and recovers transient errors without stealing focus. Ordinary
+transient errors are continued once after successful delivery; an explicit
+account-pool `auth_unavailable` 503 is retried every 5 seconds until a fresh
+authoritative `Working (duration • esc to interrupt)` or
+`Compacting context (duration • esc to interrupt)` status appears.
+
+**中文：** Windows 下的 OpenAI Codex CLI 守护工具，可在不抢占焦点的情况下
+自动确认一次性授权并恢复瞬时错误。普通瞬时错误成功发送一次“继续执行”后会
+等待状态确认；明确的账号池 `auth_unavailable` 503 则每 5 秒重试，直到检测到
+新的权威状态 `Working (duration • esc to interrupt)` 或
+`Compacting context (duration • esc to interrupt)`。
+
 > **Tested on:** Windows Terminal + `codex-cli` 0.156.x. The code also ships a
 > CDP path aimed at the Codex Desktop "Allow once" dialog, but the author has
 > only run the CLI flow end-to-end; the desktop path is included as-is and is
