@@ -13,10 +13,7 @@ STREAM_ERROR = (
     "error decoding response body"
 )
 POOL_ERROR = (
-    "■ unexpected status 503 Service Unavailable: auth_unavailable: "
-    "账号池没有可用账号：候选 1 个，不可用 1 个，模型排除 0 个，额度保留拦截 0\n"
-    "个，生图策略拦截 0 个。请前往 Cockpit Tools 查看账号池诊断详情。, "
-    "url: http://localhost:57119/v1/responses"
+    "■ unexpected status 503 Service Unavailable"
 )
 
 
@@ -238,7 +235,146 @@ class RecoveryStatusPriorityTests(unittest.TestCase):
 
 
 class RecoveryStatusAndCancellationTests(unittest.TestCase):
-    def test_reported_errors_retry_without_click_until_compacting_or_working(self):
+    def test_interrupted_error_rearms_without_a_mouse_click(self):
+        mod = load_module()
+        tracker = mod.ErrorRecoveryTracker()
+        calls = []
+        error = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+            "hwnd": 906,
+            "title": "Codex task",
+            "text": "OpenAI Codex\n■ unexpected status 503 Service Unavailable",
+        }
+        interrupted = {
+            **error,
+            "text": (
+                error["text"]
+                + "\n■ Conversation interrupted - tell the model what to do differently."
+            ),
+        }
+        working = {
+            **error,
+            "text": "OpenAI Codex\nWorking (12s • esc to interrupt)\n"
+            + error["text"].split("\n", 1)[1],
+        }
+        sender = lambda hwnd: calls.append(hwnd) or True
+
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots([error], tracker, sender),
+            (True, "http-503", True),
+        )
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots([working], tracker, sender),
+            (False, None, None),
+        )
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots([interrupted], tracker, sender),
+            (False, None, None),
+        )
+        # The terminal can expose the same error again without a user click
+        # after the interrupted status disappears.  That is a new recovery
+        # edge, not the original successful post being replayed.
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots([error], tracker, sender),
+            (True, "http-503", True),
+        )
+        self.assertEqual(calls, [906, 906])
+
+    def test_interrupted_error_rearms_even_when_working_status_was_missed(self):
+        mod = load_module()
+        tracker = mod.ErrorRecoveryTracker()
+        calls = []
+        error = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+            "hwnd": 905,
+            "title": "Codex task",
+            "text": "OpenAI Codex\n■ unexpected status 503 Service Unavailable",
+        }
+        interrupted = {
+            **error,
+            "text": error["text"] + "\n■ Conversation interrupted",
+        }
+        sender = lambda hwnd: calls.append(hwnd) or True
+
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots([error], tracker, sender),
+            (True, "http-503", True),
+        )
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots([interrupted], tracker, sender),
+            (False, None, None),
+        )
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots([error], tracker, sender),
+            (True, "http-503", True),
+        )
+        self.assertEqual(calls, [905, 905])
+
+    def test_empty_uia_scan_does_not_rearm_the_same_error(self):
+        mod = load_module()
+        trackers = {}
+        calls = []
+        error = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+            "hwnd": 907,
+            "title": "Codex task",
+            "text": "OpenAI Codex\n429 Too Many Requests",
+        }
+        sender = lambda hwnd: calls.append(hwnd) or True
+
+        with patch.object(mod, "recovery_window_is_alive", return_value=True):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots_multi([error], trackers, sender),
+                [(907, "http-429", True)],
+            )
+            # An empty helper response is an unknown read (for example while
+            # the terminal is redrawing), not proof that the visible error cleared.
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots_multi([], trackers, sender),
+                [],
+            )
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots_multi([error], trackers, sender),
+                [],
+            )
+        self.assertEqual(calls, [907])
+
+    def test_transiently_missing_window_does_not_rearm_the_same_error(self):
+        mod = load_module()
+        trackers = {}
+        calls = []
+        error = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+            "hwnd": 908,
+            "title": "Codex task",
+            "text": "OpenAI Codex\n429 Too Many Requests",
+        }
+        unrelated = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+            "hwnd": 909,
+            "title": "Codex task 2",
+            "text": "OpenAI Codex\nReady",
+        }
+        sender = lambda hwnd: calls.append(hwnd) or True
+
+        with patch.object(mod, "recovery_window_is_alive", return_value=True):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots_multi([error], trackers, sender),
+                [(908, "http-429", True)],
+            )
+            # A successful UIA read can still omit one terminal for a redraw
+            # interval.  Losing that HWND for one scan must not create a new edge.
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots_multi([unrelated], trackers, sender),
+                [],
+            )
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots_multi([error], trackers, sender),
+                [],
+            )
+        self.assertEqual(calls, [908])
+
+    def test_successful_error_delivery_stays_one_shot_until_compacting_or_working(self):
         mod = load_module()
         for error, signature in ((STREAM_ERROR, "stream-disconnected"), (POOL_ERROR, "http-503")):
             for status in ("◦ Compacting context (1m 03s • esc to interrupt)",
@@ -252,7 +388,7 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
                     }
                     sender = lambda hwnd: calls.append(hwnd) or True
                     for now, expected in ((0.0, [(930, signature, True)]), (0.8, []),
-                                          (4.9, []), (5.0, [(930, signature, True)])):
+                                          (4.9, []), (60.0, [])):
                         with patch.object(mod.time, "monotonic", return_value=now):
                             self.assertEqual(
                                 mod.process_codex_recovery_snapshots_multi([snapshot], trackers, sender),
@@ -264,8 +400,62 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
                             self.assertEqual(
                                 mod.process_codex_recovery_snapshots_multi([active], trackers, sender), [],
                             )
-                    self.assertEqual(calls, [930, 930])
+                    self.assertEqual(calls, [930])
                     self.assertTrue(trackers[930].working_seen)
+
+    def test_working_snapshot_without_codex_marker_freezes_sibling_error(self):
+        mod = load_module()
+        trackers = {}
+        calls = []
+        hwnd = 931
+        error_line = "unexpected status 503 Service Unavailable"
+        initial = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+            "hwnd": hwnd,
+            "title": "Codex task",
+            "text": "OpenAI Codex\n" + error_line + "\n› Ask Codex to do anything",
+        }
+        # UIA can expose more than one TermControl for one Windows Terminal
+        # HWND.  The live Working line may be in one snapshot while another
+        # snapshot contributes a longer stale viewport with the old error.
+        working_snapshot = {
+            **initial,
+            "title": "Windows Terminal",
+            # UIA can expose a status-only TermControl without a Codex marker;
+            # another sibling control carries the stale Codex error.
+            "text": "Working (12s - esc to interrupt)",
+        }
+        stale_snapshot = {
+            **initial,
+            "title": "Windows Terminal",
+            "text": (
+                "OpenAI Codex\n"
+                + ("historical transcript\n" * 30)
+                + error_line
+                + "\n› Ask Codex to do anything"
+            ),
+        }
+        sender = lambda current_hwnd: calls.append(current_hwnd) or True
+
+        self.assertFalse(mod.eligible_codex_snapshot(working_snapshot))
+        self.assertTrue(mod.eligible_codex_snapshot(stale_snapshot))
+
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots_multi([initial], trackers, sender),
+            [(hwnd, "http-503", True)],
+        )
+        trackers[hwnd].semantic_retry_seconds = 0.0
+        trackers[hwnd].confirmation_timeout_seconds = 0.0
+
+        for _ in range(5):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots_multi(
+                    [working_snapshot, stale_snapshot], trackers, sender
+                ),
+                [],
+            )
+        self.assertEqual(calls, [hwnd])
+        self.assertTrue(trackers[hwnd].working_seen)
 
     def test_new_error_after_working_confirmation_is_not_suppressed(self):
         mod = load_module()
@@ -357,7 +547,7 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
         )
         self.assertEqual(calls, [907, 907])
 
-    def test_persistent_error_continues_after_successful_post(self):
+    def test_persistent_error_does_not_repeat_after_successful_post(self):
         mod = load_module()
         tracker = mod.ErrorRecoveryTracker()
         tracker.semantic_retry_seconds = 0.0
@@ -376,17 +566,14 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
             mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
             (True, "http-429", True),
         )
-        self.assertEqual(
-            mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
-            (True, "http-429", True),
-        )
-        self.assertEqual(
-            mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
-            (True, "http-429", True),
-        )
-        self.assertEqual(calls, [912, 912, 912])
+        for _ in range(2):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
+                (False, "http-429", None),
+            )
+        self.assertEqual(calls, [912])
 
-    def test_persistent_429_continues_until_working_even_when_legacy_cap_is_one(self):
+    def test_persistent_429_does_not_repeat_until_working_even_when_legacy_cap_is_one(self):
         mod = load_module()
         tracker = mod.ErrorRecoveryTracker()
         tracker.semantic_retry_seconds = 0.0
@@ -409,14 +596,11 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
             mod.process_codex_recovery_snapshots([error], tracker, sender),
             (True, "http-429", True),
         )
-        self.assertEqual(
-            mod.process_codex_recovery_snapshots([error], tracker, sender),
-            (True, "http-429", True),
-        )
-        self.assertEqual(
-            mod.process_codex_recovery_snapshots([error], tracker, sender),
-            (True, "http-429", True),
-        )
+        for _ in range(2):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots([error], tracker, sender),
+                (False, "http-429", None),
+            )
         self.assertEqual(
             mod.process_codex_recovery_snapshots([working], tracker, sender),
             (False, None, None),
@@ -425,9 +609,9 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
             mod.process_codex_recovery_snapshots([error], tracker, sender),
             (False, "http-429", None),
         )
-        self.assertEqual(calls, [921, 921, 921])
+        self.assertEqual(calls, [921])
 
-    def test_successful_delivery_waits_for_working_before_semantic_follow_up(self):
+    def test_successful_delivery_waits_for_working_without_semantic_follow_up(self):
         mod = load_module()
         tracker = mod.ErrorRecoveryTracker()
         tracker.semantic_retry_seconds = 0.0
@@ -452,12 +636,38 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
             )
             self.assertEqual(
                 mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
-                (True, "http-503", True),
+                (False, "http-503", None),
             )
 
-        self.assertEqual(calls, [925, 925])
+        self.assertEqual(calls, [925])
 
-    def test_error_does_not_rearm_from_ready_without_visible_working_status(self):
+    def test_successful_delivery_never_repeats_without_authoritative_state(self):
+        mod = load_module()
+        tracker = mod.ErrorRecoveryTracker()
+        calls = []
+        snapshot = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+            "hwnd": 926,
+            "title": "Codex task",
+            "text": "OpenAI Codex\n■ unexpected status 503 Service Unavailable",
+        }
+        sender = lambda hwnd: calls.append(hwnd) or True
+
+        for now, expected in (
+            (0.0, (True, "http-503", True)),
+            (1.0, (False, "http-503", None)),
+            (5.0, (False, "http-503", None)),
+            (60.0, (False, "http-503", None)),
+        ):
+            with patch.object(mod.time, "monotonic", return_value=now):
+                self.assertEqual(
+                    mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
+                    expected,
+                )
+
+        self.assertEqual(calls, [926])
+
+    def test_authoritative_ready_clear_rearms_after_successful_delivery(self):
         mod = load_module()
         tracker = mod.ErrorRecoveryTracker()
         tracker.semantic_retry_seconds = 10.0
@@ -482,11 +692,11 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
         )
         self.assertEqual(
             mod.process_codex_recovery_snapshots([error], tracker, sender),
-            (False, "http-429", None),
+            (True, "http-429", True),
         )
-        self.assertEqual(calls, [913])
+        self.assertEqual(calls, [913, 913])
 
-    def test_cancellation_cancels_a_pending_delivery_follow_up(self):
+    def test_cancellation_rearms_a_pending_delivery_without_click(self):
         mod = load_module()
         tracker = mod.ErrorRecoveryTracker()
         tracker.delivery_retry_seconds = 0.0
@@ -517,11 +727,11 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
         )
         self.assertEqual(
             mod.process_codex_recovery_snapshots([initial], tracker, sender),
-            (False, "http-503", None),
+            (True, "http-503", False),
         )
-        self.assertEqual(calls, [908])
+        self.assertEqual(calls, [908, 908])
 
-    def test_same_visible_error_continues_until_working_status(self):
+    def test_same_visible_error_stays_one_shot_until_working_status(self):
         mod = load_module()
         tracker = mod.ErrorRecoveryTracker(retry_seconds=30.0)
         tracker.semantic_retry_seconds = 30.0
@@ -544,20 +754,17 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
                 mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
                 (True, "http-503", True),
             )
-            self.assertEqual(
-                mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
-                (True, "http-503", True),
-            )
-            self.assertEqual(
-                mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
-                (True, "http-503", True),
-            )
+            for _ in range(2):
+                self.assertEqual(
+                    mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
+                    (False, "http-503", None),
+                )
             self.assertEqual(
                 mod.process_codex_recovery_snapshots([working], tracker, sender),
                 (False, None, None),
             )
 
-        self.assertEqual(calls, [903, 903, 903])
+        self.assertEqual(calls, [903])
 
     def test_cancelled_conversation_does_not_retrigger_stale_error(self):
         mod = load_module()
@@ -622,7 +829,7 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
         self.assertEqual(repeat, [])
         self.assertEqual(calls, [905, 906])
 
-    def test_two_persistent_error_windows_keep_following_up(self):
+    def test_two_error_windows_each_send_once(self):
         mod = load_module()
         trackers = {
             914: mod.ErrorRecoveryTracker(),
@@ -653,17 +860,14 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
             mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender),
             [(914, "http-429", True), (915, "model-capacity", True)],
         )
-        self.assertEqual(
-            mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender),
-            [(914, "http-429", True), (915, "model-capacity", True)],
-        )
-        self.assertEqual(
-            mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender),
-            [(914, "http-429", True), (915, "model-capacity", True)],
-        )
-        self.assertEqual(calls, [914, 915, 914, 915, 914, 915])
+        for _ in range(2):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender),
+                [],
+            )
+        self.assertEqual(calls, [914, 915])
 
-    def test_two_windows_keep_sending_all_recognized_errors_until_working(self):
+    def test_two_windows_send_all_recognized_errors_once(self):
         mod = load_module()
         trackers = {922: mod.ErrorRecoveryTracker(), 923: mod.ErrorRecoveryTracker()}
         for tracker in trackers.values():
@@ -687,16 +891,16 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
         ]
         sender = lambda hwnd: calls.append(hwnd) or True
 
-        for _ in range(4):
-            events = mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender)
-            self.assertEqual(
-                events,
-                [(922, "http-429", True), (923, "http-503", True)],
-            )
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender),
+            [(922, "http-429", True), (923, "http-503", True)],
+        )
+        for _ in range(3):
+            self.assertEqual(mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender), [])
 
-        self.assertEqual(calls, [922, 923, 922, 923, 922, 923, 922, 923])
+        self.assertEqual(calls, [922, 923])
 
-    def test_recognized_error_families_use_the_same_continuous_policy(self):
+    def test_recognized_error_families_use_the_same_one_shot_policy(self):
         mod = load_module()
         for text, signature in (
             ("OpenAI Codex\n■ exceeded retry limit", "retry-limit"),
@@ -720,14 +924,18 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
                     "text": text,
                 }
                 sender = lambda hwnd: calls.append(hwnd) or True
-                for _ in range(3):
+                self.assertEqual(
+                    mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
+                    (True, signature, True),
+                )
+                for _ in range(2):
                     self.assertEqual(
                         mod.process_codex_recovery_snapshots([snapshot], tracker, sender),
-                        (True, signature, True),
+                        (False, signature, None),
                     )
-                self.assertEqual(calls, [924, 924, 924])
+                self.assertEqual(calls, [924])
 
-    def test_three_persistent_503_windows_keep_following_up(self):
+    def test_three_503_windows_send_once_each(self):
         mod = load_module()
         trackers = {hwnd: mod.ErrorRecoveryTracker() for hwnd in (916, 917, 918)}
         for tracker in trackers.values():
@@ -745,12 +953,16 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
         ]
         sender = lambda hwnd: calls.append(hwnd) or True
 
-        for _ in range(4):
-            mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender)
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender),
+            [(916, "http-503", True), (917, "http-503", True), (918, "http-503", True)],
+        )
+        for _ in range(3):
+            self.assertEqual(mod.process_codex_recovery_snapshots_multi(snapshots, trackers, sender), [])
 
         self.assertEqual(
             calls,
-            [916, 917, 918, 916, 917, 918, 916, 917, 918, 916, 917, 918],
+            [916, 917, 918],
         )
 
     def test_closed_window_tracker_is_pruned_before_hwnd_reuse(self):

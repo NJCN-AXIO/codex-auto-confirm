@@ -33,10 +33,8 @@ if sys.platform == "win32":
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
-# Window-title fragment used to locate the Codex terminal host on legacy builds
-# that still rename the title bar to "Action Required". Override with the
-# CODEX_AUTO_CONFIRM_TITLE environment variable if your terminal title does not
-# contain "codex". The modern UIA scanner path does not depend on this value.
+# Window-title fragment used to locate Codex terminal hosts on legacy builds.
+# The modern UIA scanner does not depend on this value.
 TARGET_TITLE = os.environ.get("CODEX_AUTO_CONFIRM_TITLE", "codex").lower()
 ACTION_REQUIRED_TITLE = os.environ.get("CODEX_AUTO_CONFIRM_ACTION_TITLE", "Action Required").lower()
 IDLE_SECONDS = 1.2
@@ -65,6 +63,10 @@ RECOVERY_SEMANTIC_RETRY_SECONDS = max(
     0.25,
     float(os.environ.get("CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS", "0.8")),
 )
+RECOVERY_MISSING_WINDOW_GRACE_SCANS = max(
+    1,
+    int(os.environ.get("CODEX_AUTO_CONFIRM_MISSING_WINDOW_GRACE_SCANS", "4")),
+)
 RECOVERY_CONFIRMATION_TIMEOUT_SECONDS = max(
     RECOVERY_SEMANTIC_RETRY_SECONDS,
     float(os.environ.get("CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS", "5.0")),
@@ -80,10 +82,10 @@ DESKTOP_POLL_SECONDS = max(
     0.25,
     float(os.environ.get("CODEX_AUTO_CONFIRM_DESKTOP_POLL_SECONDS", "1.0")),
 )
-# A visible recovery error remains eligible for another send until the current
-# viewport proves Working/reconnecting/cancellation/clear.  The legacy
-# RECOVERY_MAX_ATTEMPTS setting is retained for environment compatibility but
-# does not cap status-gated recovery anymore.
+# A successful recovery delivery remains latched until the current viewport
+# proves Working/reconnecting/cancellation/clear.  Only an explicit delivery
+# failure is eligible for a timed retry.  The legacy RECOVERY_MAX_ATTEMPTS
+# setting is retained for environment compatibility.
 RECOVERY_RETRY_SECONDS = None
 # Locate the bundled UIA helper.  When frozen by PyInstaller, resources are
 # unpacked into sys._MEIPASS; otherwise sit next to this .py file.
@@ -561,6 +563,17 @@ def _retry_progress(text: str) -> tuple[int, int] | None:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+def _conversation_interrupted_active(text: str) -> bool:
+    """Return whether the current viewport reports a cancellation status."""
+    for raw_line in _current_viewport_lines(text):
+        lowered = normalize_terminal_text(raw_line)
+        if lowered.startswith(("\u203a", ">")):
+            continue
+        if any(marker in lowered for marker in RECOVERY_TERMINAL_STATUS_MARKERS):
+            return True
+    return False
+
+
 def _working_status_line(line: str) -> bool:
     """Return True for the visible Codex Working duration status line.
 
@@ -586,13 +599,7 @@ def _recovery_status_active(text: str) -> bool:
         return True
     if any(_working_status_line(raw_line) for raw_line in lines):
         return True
-    for raw_line in lines:
-        lowered = normalize_terminal_text(raw_line)
-        if lowered.startswith(("›", ">")):
-            continue
-        if any(marker in lowered for marker in RECOVERY_TERMINAL_STATUS_MARKERS):
-            return True
-    return False
+    return _conversation_interrupted_active(text)
 
 
 def _working_status_active(text: str) -> bool:
@@ -753,6 +760,8 @@ class ErrorRecoveryTracker:
         self.delivery_pending = False
         self.semantic_retry_pending = False
         self.last_delivery_at: float | None = None
+        self.cancellation_seen = False
+        self.missing_snapshot_scans = 0
 
     def observe(self, is_error: bool | None) -> bool:
         if is_error is None:
@@ -761,9 +770,7 @@ class ErrorRecoveryTracker:
 
     def observe_no_error(self) -> bool:
         """Clear only after recovery has been confirmed or no event was latched."""
-        if self.latched_signature is not None and (
-            self.delivery_pending or self.semantic_retry_pending
-        ):
+        if self.latched_signature is not None and self.delivery_pending:
             return False
         self.reset()
         return False
@@ -775,6 +782,7 @@ class ErrorRecoveryTracker:
         status_active: bool = False,
         suppressed_signature: str | None = None,
         working_active: bool = False,
+        cancellation_active: bool = False,
         now: float | None = None,
     ) -> bool:
         if retry_progress is not None:
@@ -783,8 +791,18 @@ class ErrorRecoveryTracker:
         if status_active:
             self.delivery_pending = False
             self.semantic_retry_pending = False
+            if cancellation_active and not working_active:
+                # A cancellation after an attempted recovery means the next
+                # appearance of the same signature is a new recovery edge.
+                # Keep the latch while the status is visible so a stale error
+                # line cannot fire repeatedly, then re-arm once the
+                # cancellation line disappears.  This also covers a fast
+                # failure where UIA never exposes a Working status.
+                if self.latched_signature is not None:
+                    self.cancellation_seen = True
             if working_active and self.latched_signature is not None:
                 self.working_seen = True
+                self.cancellation_seen = False
             elif suppressed_signature is None and not working_active:
                 self.reset()
             elif self.latched_signature is None:
@@ -794,6 +812,15 @@ class ErrorRecoveryTracker:
         if signature is None:
             self.reset()
             return False
+        if self.cancellation_seen:
+            self.cancellation_seen = False
+            self.working_seen = False
+            self.latched_signature = None
+            self.pending_signature = None
+            self.delivery_attempts = 0
+            self.delivery_pending = False
+            self.semantic_retry_pending = False
+            self.last_delivery_at = None
         if self.working_seen:
             # Working confirms the previously latched occurrence. Keep
             # suppressing that same stale line, but allow a genuinely new
@@ -812,13 +839,12 @@ class ErrorRecoveryTracker:
             if self.delivery_pending:
                 retry_seconds = self.delivery_retry_seconds
             elif self.semantic_retry_pending:
-                # PostMessage success only proves that Windows accepted the
-                # input. Wait for the authoritative Working(duration) status
-                # before considering another semantic attempt.
-                retry_seconds = max(
-                    self.semantic_retry_seconds,
-                    self.confirmation_timeout_seconds,
-                )
+                # A successful PostMessage is still only input delivery, but
+                # repeating a successful semantic send while UIA is delayed
+                # queues duplicate messages in Codex's "submit after next tool
+                # call" buffer.  Hold the latch until an authoritative status
+                # or clear transition; only failed delivery is retried.
+                return False
             else:
                 return False
             now = time.monotonic() if now is None else now
@@ -841,6 +867,8 @@ class ErrorRecoveryTracker:
         self.delivery_pending = False
         self.semantic_retry_pending = False
         self.last_delivery_at = None
+        self.cancellation_seen = False
+        self.missing_snapshot_scans = 0
         return True
 
     def record_delivery(self, delivered: bool, now: float | None = None) -> None:
@@ -862,6 +890,8 @@ class ErrorRecoveryTracker:
         self.delivery_pending = False
         self.semantic_retry_pending = False
         self.last_delivery_at = None
+        self.cancellation_seen = False
+        self.missing_snapshot_scans = 0
 
 class ActionRequiredTracker:
     def __init__(self, retry_seconds: float | None = RETRY_ENTER_SECONDS) -> None:
@@ -1082,6 +1112,16 @@ def find_inputsite_target(hwnd: int | None) -> int | None:
     return result_hwnd or hwnd
 
 
+def recovery_window_is_alive(hwnd: int) -> bool:
+    """Distinguish a closed HWND from a transiently missing UIA snapshot."""
+    try:
+        return bool(user32.IsWindow(hwnd))
+    except Exception:
+        # If the readback API is unavailable, preserve the latch.  Resetting
+        # on uncertainty is what causes duplicate recovery messages.
+        return True
+
+
 def _post_messages_via_attached_target(
     hwnd: int | None,
     messages: tuple[tuple[int, int, int], ...],
@@ -1164,6 +1204,7 @@ def process_codex_recovery_snapshots(
     suppressed_signature: str | None = None
     status_active = False
     working_active = False
+    cancellation_active = False
     for snapshot in snapshots:
         if not eligible_codex_snapshot(snapshot):
             continue
@@ -1172,6 +1213,9 @@ def process_codex_recovery_snapshots(
         if snapshot_status_active:
             status_active = True
             working_active = working_active or snapshot_working_active
+            cancellation_active = cancellation_active or (
+                not snapshot_working_active and _conversation_interrupted_active(text)
+            )
             suppressed_signature = suppressed_signature or raw_signature
             continue
         signature = raw_signature
@@ -1191,6 +1235,7 @@ def process_codex_recovery_snapshots(
             status_active=True,
             suppressed_signature=suppressed_signature,
             working_active=working_active,
+            cancellation_active=cancellation_active,
         )
         return False, None, None
 
@@ -1228,13 +1273,21 @@ def process_codex_recovery_snapshots_multi(
     if snapshots is None:
         return []
     if not snapshots:
-        for tracker in trackers.values():
-            tracker.reset()
+        # The UIA helper can briefly return an empty list while Windows
+        # Terminal is redrawing or replacing a TermControl.  That is an
+        # unknown read, not authoritative evidence that every visible error
+        # cleared.  Resetting here creates a fresh edge on the next scan and
+        # can enqueue duplicate ``continue`` messages.
+        for stale_hwnd in list(trackers):
+            if not recovery_window_is_alive(stale_hwnd):
+                trackers.pop(stale_hwnd, None)
         return []
 
     grouped: dict[int, list[dict]] = {}
     for snapshot in snapshots:
-        if not eligible_codex_snapshot(snapshot):
+        if not isinstance(snapshot, dict):
+            continue
+        if snapshot.get("class") != "CASCADIA_HOSTING_WINDOW_CLASS":
             continue
         try:
             hwnd = int(snapshot.get("hwnd", 0))
@@ -1244,13 +1297,40 @@ def process_codex_recovery_snapshots_multi(
             continue
         grouped.setdefault(hwnd, []).append(snapshot)
 
+    # Eligibility is a window-level decision, not a per-TermControl decision.
+    # A sibling UIA snapshot may contain only the live Working/status line and
+    # therefore lack the Codex marker required to identify a window by itself.
+    # Keep all snapshots for an HWND whenever at least one sibling establishes
+    # that the host is Codex, so the status snapshot can suppress stale errors.
+    grouped = {
+        hwnd: window_snapshots
+        for hwnd, window_snapshots in grouped.items()
+        if any(eligible_codex_snapshot(snapshot) for snapshot in window_snapshots)
+    }
+
     if not grouped:
-        for tracker in trackers.values():
-            tracker.reset()
+        # Keep the same fail-closed rule for a well-formed scan that contains
+        # no eligible terminal.  A later authoritative snapshot for a known
+        # HWND will clear its tracker through ``observe_no_error``.
+        for stale_hwnd, tracker in list(trackers.items()):
+            if not recovery_window_is_alive(stale_hwnd):
+                trackers.pop(stale_hwnd, None)
+                continue
+            tracker.missing_snapshot_scans += 1
+            if tracker.missing_snapshot_scans >= RECOVERY_MISSING_WINDOW_GRACE_SCANS:
+                trackers.pop(stale_hwnd, None)
         return []
 
     for stale_hwnd in set(trackers).difference(grouped):
-        trackers.pop(stale_hwnd).reset()
+        tracker = trackers.get(stale_hwnd)
+        if tracker is None:
+            continue
+        if not recovery_window_is_alive(stale_hwnd):
+            trackers.pop(stale_hwnd, None)
+            continue
+        tracker.missing_snapshot_scans += 1
+        if tracker.missing_snapshot_scans >= RECOVERY_MISSING_WINDOW_GRACE_SCANS:
+            trackers.pop(stale_hwnd, None)
 
     events: list[tuple[int, str, bool]] = []
     for hwnd, window_snapshots in grouped.items():
@@ -1262,6 +1342,40 @@ def process_codex_recovery_snapshots_multi(
                 str(snapshot.get("text", "")) for snapshot in window_snapshots
             )
         tracker = trackers.setdefault(hwnd, ErrorRecoveryTracker())
+        tracker.missing_snapshot_scans = 0
+
+        # A single Windows Terminal HWND can expose multiple TermControl
+        # snapshots (for example during a pane/tab redraw).  Do not decide
+        # whether the window is Working only after concatenating their text:
+        # a longer stale viewport can push the live Working line outside the
+        # 24-line current-view window.  Each snapshot is an independent
+        # authoritative read for this HWND, so any active status must freeze
+        # the tracker before the merged error text is considered.
+        snapshot_states = [
+            _recovery_state(str(snapshot.get("text", "")))
+            for snapshot in window_snapshots
+        ]
+        status_active = any(state[1] for state in snapshot_states)
+        if status_active:
+            suppressed_signature = next(
+                (state[0] for state in snapshot_states if state[0] is not None),
+                None,
+            )
+            working_active = any(state[2] for state in snapshot_states)
+            cancellation_active = any(
+                not state[2]
+                and _conversation_interrupted_active(str(snapshot.get("text", "")))
+                for snapshot, state in zip(window_snapshots, snapshot_states, strict=True)
+            )
+            tracker.observe_error(
+                None,
+                status_active=True,
+                suppressed_signature=suppressed_signature,
+                working_active=working_active,
+                cancellation_active=cancellation_active,
+            )
+            continue
+
         triggered, signature, delivered = process_codex_recovery_snapshots(
             [candidate], tracker, sender
         )

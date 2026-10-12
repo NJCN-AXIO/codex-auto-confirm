@@ -85,11 +85,12 @@ gateway line below it, the newest matching error line is authoritative.
 ### Delivery state machine
 
 The first visible error sends exactly one `继续执行` + Enter per Codex window.
-A successful post enters a confirmation window; the monitor does not send another
-copy while waiting for an authoritative `Working`/`Compacting` line. If neither
-appears after `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` (default 5s),
-the same visible error becomes eligible for another semantic send at the
-configured interval.
+A successful post remains latched for that error occurrence and is never
+semantically retried while the same error remains visible. This avoids filling
+Codex's queued-input buffer when UIA status readback is delayed. Only an
+explicit input-delivery failure is retried, at
+`CODEX_AUTO_CONFIRM_DELIVERY_RETRY_SECONDS`, until delivery succeeds or an
+authoritative status/clear ends the latch.
 
 Working, compacting, reconnecting, conversation interruption, an authoritative
 clear, or <kbd>F9</kbd> off-state cancels pending sends. Each HWND is
@@ -111,8 +112,8 @@ past the scan timeout, the reader replaces that helper in-process and continues.
 | `CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS` | `1.5` | Bound for one in-flight UIA scan. |
 | `CODEX_AUTO_CONFIRM_HELPER_RESTART_BACKOFF_SECONDS` | `1.0` | Throttle for relaunching the PowerShell helper. |
 | `CODEX_AUTO_CONFIRM_DELIVERY_RETRY_SECONDS` | `0.35` | Interval after a failed input post. |
-| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `0.8` | Repeat send while the same visible error has no `Working` status. |
-| `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` | `5.0` | How long a successful post waits for an authoritative status before re-arming. |
+| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `0.8` | Compatibility setting; successful delivery is not semantically retried. |
+| `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` | `5.0` | Compatibility setting; it does not trigger another send after successful delivery. |
 | `CODEX_AUTO_CONFIRM_DESKTOP_POLL_SECONDS` | `1.0` | CDP desktop probe interval. |
 
 ## Troubleshooting
