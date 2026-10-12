@@ -47,8 +47,9 @@ yank focus away from whatever you are doing.
 - **Error self-recovery**: on a visible `429` / `5xx` / capacity / stream-error
   line it posts `继续执行` + <kbd>Enter</kbd>, then waits for an authoritative
   `Working (… • esc to interrupt)` or `Compacting context (…)` status before
-  re-arming. A successful send is never repeated just because UIA readback is
-  delayed; only an explicit delivery failure can trigger a retry. Stale
+  re-arming. Successful sends are not repeated just because UIA readback is
+  delayed, except for an explicit `auth_unavailable` account-pool 503, which is
+  retried every 5 seconds until an authoritative working status appears. Stale
   transcript lines and historical errors are ignored.
 - **Multi-window aware**: each terminal HWND is tracked independently.
 - **Focus-safe**: keyboard input is delivered with `PostMessageW` /
@@ -145,6 +146,7 @@ All tuning is via environment variables — no config file to edit.
 | `CODEX_AUTO_CONFIRM_CDP_PORT` | `27374` | Local CDP port used for the Codex Desktop "Allow once" dialog. |
 | `CODEX_AUTO_CONFIRM_RECOVERY_TEXT` | _(auto)_ | Pin the exact "continue" command sent after a recoverable error. Default: auto-detect Chinese vs English. |
 | `CODEX_AUTO_CONFIRM_RECOVERY_POLL_SECONDS` | `0.25` | How often the UIA scanner wakes up. |
+| `CODEX_AUTO_CONFIRM_AUTH_UNAVAILABLE_RETRY_SECONDS` | `5.0` | Retry interval for an `auth_unavailable` / no-available-accounts 503 until an authoritative working status appears (minimum 1 second). |
 | `CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS` | `1.5` | Timeout for one in-flight UIA scan. |
 | `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` | `5.0` | Compatibility setting; a successful delivery is not resent while the same error remains visible. |
 | `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `0.8` | Compatibility setting; successful delivery is not semantically retried. |

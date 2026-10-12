@@ -15,6 +15,11 @@ STREAM_ERROR = (
 POOL_ERROR = (
     "■ unexpected status 503 Service Unavailable"
 )
+AUTH_UNAVAILABLE_POOL_ERROR = (
+    "■ unexpected status 503 Service Unavailable: auth_unavailable: "
+    "账号池没有可用账号：候选 2 个，不可用 2 个，模型排除 0 个，额度保留拦截 0 个，"
+    "生图策略拦截 0 个。请前往 Cockpit Tools 查看账号池诊断详情"
+)
 
 
 def load_module():
@@ -667,6 +672,65 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
 
         self.assertEqual(calls, [926])
 
+    def test_auth_unavailable_pool_503_retries_until_working_duration_appears(self):
+        mod = load_module()
+        tracker = mod.ErrorRecoveryTracker()
+        tracker.auth_unavailable_retry_seconds = 5.0
+        calls = []
+        error = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+            "hwnd": 927,
+            "title": "Codex task",
+            "text": "OpenAI Codex\n" + AUTH_UNAVAILABLE_POOL_ERROR,
+        }
+        working = {
+            **error,
+            "text": (
+                "OpenAI Codex\nWorking (12s • esc to interrupt)\n"
+                + AUTH_UNAVAILABLE_POOL_ERROR
+            ),
+        }
+        sender = lambda hwnd: calls.append(hwnd) or True
+
+        for now, expected in (
+            (0.0, (True, "http-503", True)),
+            (4.9, (False, "http-503", None)),
+            (5.0, (True, "http-503", True)),
+            (9.9, (False, "http-503", None)),
+            (10.0, (True, "http-503", True)),
+        ):
+            with patch.object(mod.time, "monotonic", return_value=now):
+                self.assertEqual(
+                    mod.process_codex_recovery_snapshots([error], tracker, sender),
+                    expected,
+                )
+
+        reconnecting = {
+            **error,
+            "text": "OpenAI Codex\nReconnecting... 2/5\n" + AUTH_UNAVAILABLE_POOL_ERROR,
+        }
+        with patch.object(mod.time, "monotonic", return_value=12.0):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots([reconnecting], tracker, sender),
+                (False, None, None),
+            )
+        with patch.object(mod.time, "monotonic", return_value=15.0):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots([error], tracker, sender),
+                (True, "http-503", True),
+            )
+
+        self.assertEqual(
+            mod.process_codex_recovery_snapshots([working], tracker, sender),
+            (False, None, None),
+        )
+        with patch.object(mod.time, "monotonic", return_value=30.0):
+            self.assertEqual(
+                mod.process_codex_recovery_snapshots([error], tracker, sender),
+                (False, "http-503", None),
+            )
+        self.assertEqual(calls, [927, 927, 927, 927])
+
     def test_authoritative_ready_clear_rearms_after_successful_delivery(self):
         mod = load_module()
         tracker = mod.ErrorRecoveryTracker()
@@ -741,7 +805,7 @@ class RecoveryStatusAndCancellationTests(unittest.TestCase):
             "class": "CASCADIA_HOSTING_WINDOW_CLASS",
             "hwnd": 903,
             "title": "Codex task",
-            "text": "OpenAI Codex\n■ unexpected status 503 Service Unavailable: auth_unavailable",
+            "text": "OpenAI Codex\n■ unexpected status 503 Service Unavailable",
         }
         sender = lambda hwnd: calls.append(hwnd) or True
         working = {

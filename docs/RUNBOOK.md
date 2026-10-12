@@ -70,6 +70,7 @@ message followed by Enter:
 - `Selected model is at capacity. Please try a different model.`
 - contextual `502`, `503`, or `504` lines such as `unexpected status 502 Bad Gateway`
 - contextual `500` or `501` lines such as `unexpected status 501 Not Implemented`
+- `503` account-pool failures containing `auth_unavailable` or `账号池没有可用账号`
 - `stream disconnected before completion` errors that include visible
   transport/decode context such as `error decoding response body`
 
@@ -90,7 +91,12 @@ semantically retried while the same error remains visible. This avoids filling
 Codex's queued-input buffer when UIA status readback is delayed. Only an
 explicit input-delivery failure is retried, at
 `CODEX_AUTO_CONFIRM_DELIVERY_RETRY_SECONDS`, until delivery succeeds or an
-authoritative status/clear ends the latch.
+authoritative status/clear ends the latch. The exception is an account-pool
+`auth_unavailable` 503: a successful send is repeated every
+`CODEX_AUTO_CONFIRM_AUTH_UNAVAILABLE_RETRY_SECONDS` (default 5 seconds) until
+the current viewport reports an authoritative `Working (duration • esc to
+interrupt)` or `Compacting context (…)` status. Reconnecting progress pauses
+sends but does not end this retry policy.
 
 Working, compacting, reconnecting, conversation interruption, an authoritative
 clear, or <kbd>F9</kbd> off-state cancels pending sends. Each HWND is
@@ -112,6 +118,7 @@ past the scan timeout, the reader replaces that helper in-process and continues.
 | `CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS` | `1.5` | Bound for one in-flight UIA scan. |
 | `CODEX_AUTO_CONFIRM_HELPER_RESTART_BACKOFF_SECONDS` | `1.0` | Throttle for relaunching the PowerShell helper. |
 | `CODEX_AUTO_CONFIRM_DELIVERY_RETRY_SECONDS` | `0.35` | Interval after a failed input post. |
+| `CODEX_AUTO_CONFIRM_AUTH_UNAVAILABLE_RETRY_SECONDS` | `5.0` | Interval after a successful send for an account-pool 503; retries continue until an authoritative working status appears (minimum 1 second). |
 | `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `0.8` | Compatibility setting; successful delivery is not semantically retried. |
 | `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` | `5.0` | Compatibility setting; it does not trigger another send after successful delivery. |
 | `CODEX_AUTO_CONFIRM_DESKTOP_POLL_SECONDS` | `1.0` | CDP desktop probe interval. |

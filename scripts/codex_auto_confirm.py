@@ -63,6 +63,10 @@ RECOVERY_SEMANTIC_RETRY_SECONDS = max(
     0.25,
     float(os.environ.get("CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS", "0.8")),
 )
+RECOVERY_AUTH_UNAVAILABLE_RETRY_SECONDS = max(
+    1.0,
+    float(os.environ.get("CODEX_AUTO_CONFIRM_AUTH_UNAVAILABLE_RETRY_SECONDS", "5.0")),
+)
 RECOVERY_MISSING_WINDOW_GRACE_SCANS = max(
     1,
     int(os.environ.get("CODEX_AUTO_CONFIRM_MISSING_WINDOW_GRACE_SCANS", "4")),
@@ -653,6 +657,31 @@ def _recovery_state(text: str) -> tuple[str | None, bool, bool]:
     )
 
 
+def _auth_unavailable_pool_error(text: str) -> bool:
+    """Identify an account-pool 503 that should be retried until Working."""
+    lines = _current_viewport_lines(text)
+    status_503_indexes = [
+        index
+        for index, raw_line in enumerate(lines)
+        if re.search(r"(?<!\d)503(?!\d)", normalize_terminal_text(raw_line))
+        and _recovery_line_has_context(normalize_terminal_text(raw_line))
+    ]
+    if not status_503_indexes:
+        return False
+
+    error_start = status_503_indexes[-1]
+    error_end = len(lines)
+    for index in range(error_start + 1, len(lines)):
+        stripped = lines[index].lstrip()
+        if stripped.startswith(("›", ">")) or any(
+            stripped.startswith(glyph) for glyph in RECOVERY_ERROR_GLYPHS
+        ):
+            error_end = index
+            break
+    error_detail = normalize_terminal_text("\n".join(lines[error_start:error_end]))
+    return "auth_unavailable" in error_detail or "账号池没有可用账号" in error_detail
+
+
 def codex_recovery_error_signature(text: str) -> str | None:
     signature, status_active, _working_active = _recovery_state(text)
     if status_active:
@@ -754,11 +783,13 @@ class ErrorRecoveryTracker:
         self.working_seen = False
         self.delivery_retry_seconds = RECOVERY_DELIVERY_RETRY_SECONDS
         self.semantic_retry_seconds = RECOVERY_SEMANTIC_RETRY_SECONDS
+        self.auth_unavailable_retry_seconds = RECOVERY_AUTH_UNAVAILABLE_RETRY_SECONDS
         self.confirmation_timeout_seconds = RECOVERY_CONFIRMATION_TIMEOUT_SECONDS
         self.max_delivery_attempts = RECOVERY_MAX_ATTEMPTS
         self.delivery_attempts = 0
         self.delivery_pending = False
         self.semantic_retry_pending = False
+        self.retry_successful_delivery = False
         self.last_delivery_at: float | None = None
         self.cancellation_seen = False
         self.missing_snapshot_scans = 0
@@ -783,6 +814,7 @@ class ErrorRecoveryTracker:
         suppressed_signature: str | None = None,
         working_active: bool = False,
         cancellation_active: bool = False,
+        retry_successful_delivery: bool = False,
         now: float | None = None,
     ) -> bool:
         if retry_progress is not None:
@@ -790,7 +822,11 @@ class ErrorRecoveryTracker:
 
         if status_active:
             self.delivery_pending = False
-            self.semantic_retry_pending = False
+            # An auth_unavailable pool error remains retryable through transient
+            # reconnecting/status lines; only Working confirms that recovery
+            # succeeded. Cancellation still ends the attempt.
+            if not self.retry_successful_delivery or working_active or cancellation_active:
+                self.semantic_retry_pending = False
             if cancellation_active and not working_active:
                 # A cancellation after an attempted recovery means the next
                 # appearance of the same signature is a new recovery edge.
@@ -820,6 +856,7 @@ class ErrorRecoveryTracker:
             self.delivery_attempts = 0
             self.delivery_pending = False
             self.semantic_retry_pending = False
+            self.retry_successful_delivery = False
             self.last_delivery_at = None
         if self.working_seen:
             # Working confirms the previously latched occurrence. Keep
@@ -834,10 +871,16 @@ class ErrorRecoveryTracker:
             self.delivery_attempts = 0
             self.delivery_pending = False
             self.semantic_retry_pending = False
+            self.retry_successful_delivery = False
             self.last_delivery_at = None
         if self.latched_signature == signature:
+            self.retry_successful_delivery = (
+                self.retry_successful_delivery or retry_successful_delivery
+            )
             if self.delivery_pending:
                 retry_seconds = self.delivery_retry_seconds
+            elif self.semantic_retry_pending and self.retry_successful_delivery:
+                retry_seconds = self.auth_unavailable_retry_seconds
             elif self.semantic_retry_pending:
                 # A successful PostMessage is still only input delivery, but
                 # repeating a successful semantic send while UIA is delayed
@@ -866,6 +909,7 @@ class ErrorRecoveryTracker:
         self.delivery_attempts = 0
         self.delivery_pending = False
         self.semantic_retry_pending = False
+        self.retry_successful_delivery = retry_successful_delivery
         self.last_delivery_at = None
         self.cancellation_seen = False
         self.missing_snapshot_scans = 0
@@ -889,6 +933,7 @@ class ErrorRecoveryTracker:
         self.delivery_attempts = 0
         self.delivery_pending = False
         self.semantic_retry_pending = False
+        self.retry_successful_delivery = False
         self.last_delivery_at = None
         self.cancellation_seen = False
         self.missing_snapshot_scans = 0
@@ -1244,7 +1289,10 @@ def process_codex_recovery_snapshots(
         return False, None, None
 
     signature, hwnd, viewport_text = match
-    if not tracker.observe_error(signature):
+    if not tracker.observe_error(
+        signature,
+        retry_successful_delivery=_auth_unavailable_pool_error(viewport_text),
+    ):
         return False, signature, None
     recovery_text = pick_recovery_text(viewport_text)
     try:
