@@ -13,8 +13,24 @@ plus `Press enter to confirm or esc to cancel`. Permanent/denial selections,
 historical menus and drafts block delivery.
 
 The semantic snapshot processor owns terminal input. A current approval defers
-recovery in the same window. Successful approval delivery is latched until an
-authoritative clear; failed posts retry only within the failure budget.
+recovery in the same window. Successful approval posts await authoritative
+readback; queuing Windows input is not proof that the approval was accepted.
+
+For a stable command key, two fresh complete safe menu reads after at least
+two seconds authorize another post, with a total three-post budget including
+failed posts. `CODEX_AUTO_CONFIRM_RETRY_SECONDS` may lengthen that wait but
+cannot shorten it below two seconds. Failed posts retain their 0.35 s interval.
+Unknown or blocked new observations interrupt the two-read evidence without
+resetting budgets. `poll() == None` means no new response, so it neither advances
+nor interrupts evidence; observations separated by the scan timeout start again.
+Anonymous/non-command menus do not retry successful posts.
+
+A previously unseen complete command key or authoritative clear confirms the
+prior successful post. A historical known key only interrupts evidence; it
+cannot acknowledge a newer pending request. Retries run synchronously from
+fresh UIA observations with all input guards, never from a background timer.
+UIA and Windows input posting are not atomic; delayed/stale observations must
+not be described as accepted input. Logs explicitly say awaiting menu readback.
 
 Command requests are identified from the latest heading and the `$ command`
 block, preserving command case, internal spacing and line breaks. Transcript

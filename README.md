@@ -75,6 +75,10 @@ yank focus away from whatever you are doing.
 - **Request tracking**: consecutive different command requests can be confirmed
   even if the intervening clear is missed. Partial menu reads preserve the
   delivered request's latch and failed-post budget.
+- **Approval readback**: a queued Enter still waits for acceptance. If the same
+  complete command menu persists in two fresh safe reads after at least 2 s,
+  retry within a total three-post budget. Drafts, Working and pane ambiguity
+  block these retries; anonymous menus retain their one-shot successful latch.
 - **Single-instance**: a named Windows mutex prevents duplicate monitors.
 - **Supervised restart**: the `.bat` launcher restarts the Python monitor after
   a crash, with a real delay even when hidden. Console and tray modes detect

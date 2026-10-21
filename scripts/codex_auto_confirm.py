@@ -9,7 +9,7 @@ current error snapshot. Window titles alone never authorize an Enter keypress.
 
 from __future__ import annotations
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 
 import ctypes
 import json
@@ -1563,22 +1563,26 @@ class ApprovalPromptTracker:
         max_delivery_attempts: int = RECOVERY_MAX_ATTEMPTS,
     ) -> None:
         self.retry_seconds = retry_seconds
-        # retry_seconds is retained for constructor compatibility with old
-        # callers, but a successful PostMessage is not retried on a timer.
-        # Only a failed delivery may use the bounded delivery retry budget.
+        # A successful PostMessage only queues input. A stable command menu
+        # still visible in two delayed fresh reads may need another post.
+        self.confirmation_retry_seconds = max(2.0, float(retry_seconds or 2.0))
         self.delivery_retry_seconds = max(0.1, float(delivery_retry_seconds))
-        self.max_delivery_attempts = max(1, int(max_delivery_attempts))
+        self.max_delivery_attempts = min(3, max(1, int(max_delivery_attempts)))
         self.visible = False
         self.last_fire_at: float | None = None
         self.last_delivery_at: float | None = None
         self.delivery_attempts = 0
         self.delivery_pending = False
+        self.awaiting_confirmation = False
+        self.confirmation_reads = 0
+        self.last_confirmation_at: float | None = None
         self.request_key: str | None = None
         self.request_states: dict[str, tuple] = {}
 
     def observe(self, is_visible: bool | None, now: float | None = None,
                 *, request_key: str | None = None) -> bool:
         if is_visible is None:
+            self.pause_confirmation()
             return False
         now = time.monotonic() if now is None else now
         if not is_visible:
@@ -1591,25 +1595,43 @@ class ApprovalPromptTracker:
                 self.request_key = request_key
                 self._remember_request()
             else:
+                # A different complete request proves the prior successful
+                # post was accepted. Stale A/B/A reads cannot revive A.
+                if request_key not in self.request_states and self.visible and not self.delivery_pending:
+                    self.awaiting_confirmation = False
+                    self._remember_request()
                 if request_key not in self.request_states and len(self.request_states) >= 128:
                     # Never evict delivered identities and reauthorize old text.
                     return False
-                state = self.request_states.get(request_key, (False, None, None, 0, False))
+                state = self.request_states.get(request_key, (False, None, None, 0, False, False))
                 (self.visible, self.last_fire_at, self.last_delivery_at,
-                 self.delivery_attempts, self.delivery_pending) = state
+                 self.delivery_attempts, self.delivery_pending, self.awaiting_confirmation) = state
                 self.request_key = request_key
+            self.pause_confirmation()
 
         if self.visible:
             if not self.delivery_pending:
-                # A delivered prompt remains latched until UIA reads it away.
-                return False
+                if not self.awaiting_confirmation or request_key is None:
+                    self.pause_confirmation()
+                    return False
             if self.delivery_attempts >= self.max_delivery_attempts:
+                self.pause_confirmation()
                 return False
+            delay = self.delivery_retry_seconds if self.delivery_pending else self.confirmation_retry_seconds
             if (
                 self.last_delivery_at is not None
-                and now - self.last_delivery_at < self.delivery_retry_seconds - 1e-9
+                and now - self.last_delivery_at < delay - 1e-9
             ):
+                self.pause_confirmation()
                 return False
+            if not self.delivery_pending:
+                if (self.last_confirmation_at is None
+                        or now - self.last_confirmation_at > RECOVERY_SCAN_TIMEOUT_SECONDS):
+                    self.confirmation_reads = 0
+                self.confirmation_reads += 1
+                self.last_confirmation_at = now
+                if self.confirmation_reads < 2:
+                    return False
             should_fire = True
         else:
             should_fire = True
@@ -1626,13 +1648,20 @@ class ApprovalPromptTracker:
         self.last_fire_at = now
         self.delivery_attempts += 1
         self.delivery_pending = not delivered
+        self.awaiting_confirmation = bool(delivered)
+        self.pause_confirmation()
         self._remember_request()
+
+    def pause_confirmation(self) -> None:
+        """An incomplete/blocked observation cannot advance retry evidence."""
+        self.confirmation_reads = 0
+        self.last_confirmation_at = None
 
     def _remember_request(self) -> None:
         if self.request_key is not None:
             self.request_states[self.request_key] = (
                 self.visible, self.last_fire_at, self.last_delivery_at,
-                self.delivery_attempts, self.delivery_pending,
+                self.delivery_attempts, self.delivery_pending, self.awaiting_confirmation,
             )
 
     def reset(self) -> None:
@@ -1641,6 +1670,8 @@ class ApprovalPromptTracker:
         self.last_delivery_at = None
         self.delivery_attempts = 0
         self.delivery_pending = False
+        self.awaiting_confirmation = False
+        self.pause_confirmation()
         self.request_key = None
         self.request_states.clear()
 
@@ -2220,15 +2251,19 @@ def process_codex_approval_snapshots_multi(
     for stale_hwnd in set(trackers).difference(grouped):
         if not recovery_window_is_alive(stale_hwnd):
             trackers.pop(stale_hwnd).observe(False)
+        else:
+            trackers[stale_hwnd].pause_confirmation()
         # An absent UIA viewport is an unknown read, not proof that the menu
         # closed. Preserve the retry interval until an actual clear is read.
 
     events: list[tuple[int, bool]] = []
     for hwnd, window_snapshots in grouped.items():
-        if any(snapshot.get("input_ambiguous") for snapshot in window_snapshots):
-            continue
         tracker = trackers.setdefault(hwnd, ApprovalPromptTracker())
+        if any(snapshot.get("input_ambiguous") for snapshot in window_snapshots):
+            tracker.pause_confirmation()
+            continue
         if any(_terminal_draft_visible(str(item.get("text", ""))) for item in window_snapshots):
+            tracker.pause_confirmation()
             continue
         menus = [
             item for item in window_snapshots
@@ -2249,10 +2284,12 @@ def process_codex_approval_snapshots_multi(
             for item in window_snapshots
         )
         if visible and recovery_input_busy(hwnd):
+            tracker.pause_confirmation()
             continue
         keys = {_approval_request_key(str(item.get("text", ""))) for item in menus}
         keys.discard(None)
         if len(keys) > 1:
+            tracker.pause_confirmation()
             continue
         observed = True if visible else (
             False if not menus and any(
@@ -2409,7 +2446,8 @@ def auto_enter_loop() -> None:
                 result = "ok" if approval_delivered else "failed"
                 print(
                     f"  Inline approval detected -> Enter attempt {enter_attempts} "
-                    f"hwnd={approval_hwnd} [send_enter={result}]",
+                    f"hwnd={approval_hwnd} [send_enter={result}] "
+                    f"{'awaiting menu readback' if approval_delivered else 'post failed'}",
                     flush=True,
                 )
                 last_state = "sent" if approval_delivered else "send_failed"

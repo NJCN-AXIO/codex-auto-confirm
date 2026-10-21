@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2] - 2026-10-21
+
+### Fixed / 修复
+
+- Keep successful command-approval posts pending until authoritative UIA
+  readback. A still-visible complete command menu can retry after at least two
+  seconds and two fresh safe observations, with a total three-post budget.
+- Missing/partial reads, drafting, typing and ambiguous panes interrupt retry
+  evidence. Historical request redraws cannot falsely acknowledge a newer menu.
+- Label input posts as awaiting menu readback in the monitor log.
+- 修复“按键入队成功但审批未通过”后永久停住的问题：同一完整命令菜单经两次读回仍存在才有限补发，
+  至少间隔两秒、每请求总投递最多三次；不改变错误续接的“继续”策略。
+
+[1.3.2]: https://github.com/NJCN-AXIO/codex-auto-confirm/releases/tag/v1.3.2
+
 ## [1.3.1] - 2026-10-21
 
 ### Fixed / 修复
