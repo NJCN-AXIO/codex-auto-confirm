@@ -4,6 +4,35 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-10-21
+
+### Fixed / 修复
+
+- Protect unfinished and multiline drafts, quoted errors, recent physical input,
+  and windows exposing an ambiguous pane target.
+- Latch a successful approval delivery until authoritative clear; keep Working /
+  Compacting barriers through redraws and incomplete UIA reads.
+- Initialize hidden PowerShell UIA pipes as UTF-8, isolate reader generations,
+  bound desktop CDP reads, and deliver text plus Enter to one resolved InputSite.
+- Detect dead worker/listener threads in console and tray modes, honor hidden
+  supervisor restart delays, and fix source-mode Windows startup to launch the monitor.
+- 修复草稿误提交、审批重复发送、Working 状态重绘误触发、隐藏进程编码和重启延迟；
+  多窗格目标不明确时暂停输入，并修复托盘健康检查及源码开机启动入口。
+
+### Changed / 调整
+
+- Merge the October 21 watchdog and its regression suites. Persistent model
+  capacity warnings retry every 3 seconds until Working/Compacting readback;
+  explicit account-pool `auth_unavailable` 503 retries remain at 5 seconds,
+  including across reconnecting states. Other errors remain one-shot per episode.
+- Preserve tray, logging, autostart, EXE resources, language selection and the
+  recovery text override. The default Chinese recovery message is now `继续！`
+  so automatic activations can be recognized; English remains `continue`.
+- 合入 10 月 21 日稳定性修复：容量不足每 3 秒重试，账号池 503 保持每 5 秒重试；
+  主动中断阻止重试，新的 Working/Compacting 状态确认恢复。中文自动续接改为 `继续！`。
+
+[1.3.0]: https://github.com/NJCN-AXIO/codex-auto-confirm/releases/tag/v1.3.0
+
 ## [1.2.0] - 2026-10-12
 
 ### Fixed / 修复

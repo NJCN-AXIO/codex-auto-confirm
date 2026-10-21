@@ -16,5 +16,5 @@ if not defined CODEX_AUTO_CONFIRM_RESTART_DELAY set "CODEX_AUTO_CONFIRM_RESTART_
 set "exit_code=%errorlevel%"
 if "%exit_code%"=="0" exit /b 0
 echo [codex-auto-confirm] exited with code %exit_code%. Restarting in %CODEX_AUTO_CONFIRM_RESTART_DELAY%s...
-timeout /t %CODEX_AUTO_CONFIRM_RESTART_DELAY% /nobreak >nul
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$delay = 2; $configuredDelay = 0; if ([int]::TryParse($env:CODEX_AUTO_CONFIRM_RESTART_DELAY, [ref]$configuredDelay) -and $configuredDelay -ge 0) { $delay = $configuredDelay }; Start-Sleep -Seconds $delay"
 goto restart

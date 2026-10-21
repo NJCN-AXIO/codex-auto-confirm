@@ -30,6 +30,7 @@ def run_tray(
     is_autostart: Callable[[], bool],
     set_autostart: Callable[[bool], None],
     shutdown: Callable[[], None],
+    keep_running: Callable[[], bool] | None = None,
 ) -> None:
     """Block until the user picks Exit from the tray menu."""
     import pystray
@@ -92,4 +93,14 @@ def run_tray(
     )
     icon_ref["icon"] = icon
     refresh_icon(icon)
-    icon.run()
+    if keep_running is None:
+        icon.run()
+    else:
+        def watch_health(icon):
+            import time
+            icon.visible = True
+            while keep_running():
+                time.sleep(0.15)
+            icon.stop()
+
+        icon.run(setup=watch_health)

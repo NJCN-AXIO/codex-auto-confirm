@@ -17,7 +17,8 @@ def _command_line() -> str:
     """
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}" --tray'
-    return f'"{sys.executable}" "{os.path.abspath(__file__)}" --tray'
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codex_auto_confirm.py")
+    return f'"{sys.executable}" "{script}" --tray'
 
 
 def is_enabled() -> bool:

@@ -13,16 +13,17 @@ A Windows watchdog for **OpenAI Codex CLI** that automatically presses
 
 **English:** A Windows watchdog for OpenAI Codex CLI that safely auto-confirms
 one-shot prompts and recovers transient errors without stealing focus. Ordinary
-transient errors are continued once after successful delivery; an explicit
-account-pool `auth_unavailable` 503 is retried every 5 seconds until a fresh
-authoritative `Working (duration • esc to interrupt)` or
-`Compacting context (duration • esc to interrupt)` status appears.
+transient errors are continued once after successful delivery. A persistent model
+capacity warning is retried every 3 seconds; an explicit account-pool
+`auth_unavailable` 503 is retried every 5 seconds. A fresh authoritative
+`Working (duration)` or `Compacting context (duration)` status stops retries.
+Draft text, recent typing, an explicit interruption, or an ambiguous pane blocks input.
 
 **中文：** Windows 下的 OpenAI Codex CLI 守护工具，可在不抢占焦点的情况下
-自动确认一次性授权并恢复瞬时错误。普通瞬时错误成功发送一次“继续执行”后会
-等待状态确认；明确的账号池 `auth_unavailable` 503 则每 5 秒重试，直到检测到
-新的权威状态 `Working (duration • esc to interrupt)` 或
-`Compacting context (duration • esc to interrupt)`。
+自动确认一次性授权并恢复瞬时错误。普通瞬时错误成功发送一次后等待状态确认；
+持续的模型容量不足每 3 秒重试，明确的账号池 `auth_unavailable` 503 每 5 秒重试，
+直到检测到新的权威状态 `Working (duration)` 或 `Compacting context (duration)`。
+草稿、近期键盘输入、主动中断及无法确定输入目标的多窗格都会阻止自动输入。
 
 > **Tested on:** Windows Terminal + `codex-cli` 0.156.x. The code also ships a
 > CDP path aimed at the Codex Desktop "Allow once" dialog, but the author has
@@ -33,7 +34,7 @@ authoritative `Working (duration • esc to interrupt)` or
 
 > Stop babysitting Codex: let it ask "Yes, proceed?" while you keep working in
 > another window. When it hits a `429 Too Many Requests`, `502/503/504`, a model
-> capacity error, or a dropped stream, the monitor types `继续执行` / continues
+> capacity error, or a dropped stream, the monitor types `继续！` / `continue`
 > for you and waits for the authoritative `Working …` status before it considers
 > the loop recovered.
 
@@ -60,11 +61,12 @@ yank focus away from whatever you are doing.
 - **One-shot approval auto-confirm** for the inline TUI menus
   (`Yes, proceed` / `Yes, just this once`) — the primary, author-tested path.
 - **Error self-recovery**: on a visible `429` / `5xx` / capacity / stream-error
-  line it posts `继续执行` + <kbd>Enter</kbd>, then waits for an authoritative
+  line it posts `继续！` or `continue` + <kbd>Enter</kbd>, then waits for an authoritative
   `Working (… • esc to interrupt)` or `Compacting context (…)` status before
   re-arming. Successful sends are not repeated just because UIA readback is
-  delayed, except for an explicit `auth_unavailable` account-pool 503, which is
-  retried every 5 seconds until an authoritative working status appears. Stale
+  delayed. Persistent capacity warnings retry every 3 seconds; explicit
+  `auth_unavailable` account-pool 503 errors retry every 5 seconds until an
+  authoritative working status appears. Stale
   transcript lines and historical errors are ignored.
 - **Multi-window aware**: each terminal HWND is tracked independently.
 - **Focus-safe**: keyboard input is delivered with `PostMessageW` /
@@ -73,11 +75,14 @@ yank focus away from whatever you are doing.
 - **Edge-triggered**: a prompt is confirmed exactly once until it clears.
 - **Single-instance**: a named Windows mutex prevents duplicate monitors.
 - **Supervised restart**: the `.bat` launcher restarts the Python monitor after
-  a crash, but respects a clean <kbd>F10</kbd> exit.
+  a crash, with a real delay even when hidden. Console and tray modes detect
+  dead worker/listener threads and respect a clean <kbd>F10</kbd> exit.
+- **Typing protection**: unfinished drafts and recent typing defer input. Multiple
+  TermControls in one window defer input until its target is unambiguous.
 - **No screenshots, no OCR**: it reads the terminal through the native Windows
   UIA TextPattern API, so it works on any DPI / font size.
 - **Multi-language recovery**: detects Chinese vs English Codex UI and sends
-  `继续执行` or `continue` accordingly (override with
+  `继续！` or `continue` accordingly (override with
   `CODEX_AUTO_CONFIRM_RECOVERY_TEXT`).
 - **System tray**: green/grey icon shows ON/OFF; right-click to toggle, enable
   Windows startup, or quit.
@@ -164,7 +169,7 @@ All tuning is via environment variables — no config file to edit.
 | `CODEX_AUTO_CONFIRM_AUTH_UNAVAILABLE_RETRY_SECONDS` | `5.0` | Retry interval for an `auth_unavailable` / no-available-accounts 503 until an authoritative working status appears (minimum 1 second). |
 | `CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS` | `1.5` | Timeout for one in-flight UIA scan. |
 | `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` | `5.0` | Compatibility setting; a successful delivery is not resent while the same error remains visible. |
-| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `0.8` | Compatibility setting; successful delivery is not semantically retried. |
+| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `3.0` | Retry interval for persistent capacity warnings (minimum 1.2 seconds). |
 | `CODEX_AUTO_CONFIRM_POWERSHELL` | `powershell.exe` | Path to the PowerShell executable used for the UIA helper. |
 
 See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the full list and the exact
@@ -172,8 +177,8 @@ error signatures that trigger recovery.
 
 ## Safety notes
 
-- This tool sends <kbd>Enter</kbd> (and, for the Chinese locale, the four
-  characters `继续执行`) **only** after the current UIA/CDP read proves a real
+- This tool sends <kbd>Enter</kbd> (and, for the Chinese locale, the message
+  `继续！`) **only** after the current UIA/CDP read proves a real
   one-shot approval or a known transient error is on screen. It does **not**
   infer completion from a window title or a generic substring.
 - Deny / reject menus, "always allow" options, quoted examples inside the

@@ -1,4 +1,8 @@
 $ErrorActionPreference = "Stop"
+# Hidden launches can inherit the OEM codec, which replaces Codex's prompt and
+# status glyphs with '?'. The Python reader uses UTF-8 for this pipe protocol.
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
@@ -24,6 +28,10 @@ function Read-VisibleSnapshots {
                 [System.Windows.Automation.TreeScope]::Descendants,
                 $termCondition
             )
+            # Delivery targets the parent HWND, so multiple panes cannot be
+            # safely associated with its one input target. Count every control,
+            # including one whose text read later fails, and defer this window.
+            $inputAmbiguous = $terms.Count -gt 1
         } catch {
             continue
         }
@@ -45,6 +53,7 @@ function Read-VisibleSnapshots {
                     hwnd = [int]$window.Current.NativeWindowHandle
                     title = [string]$window.Current.Name
                     process_id = [int]$window.Current.ProcessId
+                    input_ambiguous = [bool]$inputAmbiguous
                     text = ($parts -join [Environment]::NewLine)
                 }
             } catch {

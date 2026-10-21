@@ -42,11 +42,42 @@ class _FakeWebSocket:
             }
         )
 
-    def close(self):
+    def close(self, timeout=0):
         self.closed = True
+
+    def settimeout(self, seconds):
+        self.timeout = seconds
 
 
 class DesktopCdpTests(unittest.TestCase):
+    def test_desktop_detector_closes_connection_after_read_failure(self):
+        mod = load_module()
+        fake_ws = _FakeWebSocket()
+        fake_ws.recv = unittest.mock.Mock(side_effect=TimeoutError("read failed"))
+        websocket_module = types.SimpleNamespace(create_connection=lambda *_a, **_k: fake_ws)
+        with (
+            patch.object(mod, "discover_cdp_targets", return_value=[{"webSocketDebuggerUrl": "ws://fixture"}]),
+            patch.dict(sys.modules, {"websocket": websocket_module}),
+        ):
+            self.assertFalse(mod.read_desktop_allow_once())
+        self.assertTrue(fake_ws.closed)
+
+    def test_unrelated_cdp_events_cannot_hold_the_monitor_forever(self):
+        mod = load_module()
+        fake_ws = _FakeWebSocket()
+        fake_ws.recv = unittest.mock.Mock(
+            side_effect=[json.dumps({"method": "unrelated.event"})] * 10 + [TimeoutError("fixture bound")],
+        )
+        websocket_module = types.SimpleNamespace(create_connection=lambda *_a, **_k: fake_ws)
+        with (
+            patch.object(mod, "discover_cdp_targets", return_value=[{"webSocketDebuggerUrl": "ws://fixture"}]),
+            patch.dict(sys.modules, {"websocket": websocket_module}),
+            patch.object(mod.time, "monotonic", side_effect=[0.0, 0.1, 0.2, 0.4, 0.5]),
+        ):
+            self.assertFalse(mod.read_desktop_allow_once(timeout_seconds=0.3))
+        self.assertLessEqual(fake_ws.recv.call_count, 2)
+        self.assertTrue(fake_ws.closed)
+
     def test_desktop_detector_sends_parseable_dom_expression(self):
         """The Runtime.evaluate payload must compile in a real JS engine."""
         mod = load_module()

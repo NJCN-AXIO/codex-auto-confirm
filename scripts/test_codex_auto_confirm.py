@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +21,57 @@ def load_module():
 
 
 class AutoConfirmTests(unittest.TestCase):
+    def test_selected_options_merged_by_uia_still_confirm_once(self):
+        mod = load_module()
+        for marker in ("›", "»"):
+            with self.subTest(marker=marker):
+                snapshot = {
+                    "class": "CASCADIA_HOSTING_WINDOW_CLASS", "hwnd": 456,
+                    "title": "Windows Terminal",
+                    "text": (
+                        "Would you like to make the following edits?\n"
+                        f"{marker} 1. Yes, proceed (y)2. Yes, and don't ask again for these files (a)"
+                        "3. No, and tell Codex what to do differently (esc)"
+                    ),
+                }
+                sent = []
+                trackers = {}
+                sender = lambda hwnd: sent.append(hwnd) or True
+                self.assertEqual(mod.process_codex_approval_snapshots_multi(
+                    [snapshot], trackers, sender), [(456, True)])
+                self.assertEqual(mod.process_codex_approval_snapshots_multi(
+                    [snapshot], trackers, sender), [])
+                self.assertEqual(sent, [456])
+
+    def test_long_live_approval_does_not_lose_its_heading(self):
+        mod = load_module()
+        snapshot = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS", "hwnd": 456,
+            "title": "Windows Terminal",
+            "text": "Would you like to make the following edits?\n"
+                + "  proposed edit\n" * 45
+                + "› 1. Yes, proceed (y)\n2. No, and tell Codex what to do differently (esc)",
+        }
+        self.assertEqual(mod.process_codex_approval_snapshots_multi(
+            [snapshot], {}, lambda hwnd: True), [(456, True)])
+
+    def test_historical_menu_above_current_composer_is_not_confirmed(self):
+        mod = load_module()
+        for marker in ("›", "»"):
+            for composer in ("Ask Codex to do anything", "unfinished message"):
+                with self.subTest(marker=marker, composer=composer):
+                    snapshot = {
+                        "class": "CASCADIA_HOSTING_WINDOW_CLASS", "hwnd": 456,
+                        "title": "Action Required",
+                        "text": "Would you like to run the following command?\n"
+                            "1. Yes, proceed (y)\n2. No, continue without running it (n)\n"
+                            + f"{marker} {composer}",
+                    }
+                    sender = unittest.mock.Mock(return_value=True)
+                    self.assertEqual(mod.process_codex_approval_snapshots_multi(
+                        [snapshot], {}, sender), [])
+                    sender.assert_not_called()
+
     def test_inline_approval_matches_codex_015x_tui_copy(self):
         mod = load_module()
         self.assertTrue(mod.codex_approval_prompt_visible(
@@ -51,7 +103,7 @@ class AutoConfirmTests(unittest.TestCase):
         snapshot = {
             "class": "CASCADIA_HOSTING_WINDOW_CLASS",
             "hwnd": 123,
-            "title": "diagnose CODEX CLI | my-laptop",
+            "title": "diagnose CODEX CLI | PC-20260522",
             "text": "The transcript mentions codex_auto_confirm.py",
         }
         self.assertTrue(mod.eligible_codex_snapshot(snapshot))
@@ -61,11 +113,11 @@ class AutoConfirmTests(unittest.TestCase):
         snapshot = {
             "class": "CASCADIA_HOSTING_WINDOW_CLASS",
             "hwnd": 456,
-            "title": "my-project - Windows Terminal",
+            "title": "E:\\shopee-auto-lister - Windows Terminal",
             "text": (
                 "Would you like to make the following edits?\n"
                 "Description: Apply proposed file edits\n"
-                "Destination: my-project/.git/info\nexclude\n"
+                "Destination: E:\\shopee-auto-lister\\.git\\info\\exclude\n"
                 "1. Yes, proceed (y)2. Yes, and don't ask again for these files (a)"
                 "3. No, and tell Codex what to do differently (esc)"
             ),
@@ -102,9 +154,27 @@ class AutoConfirmTests(unittest.TestCase):
         self.assertFalse(mod.desktop_allow_once_visible([{"text": "始终允许", "visible": True}]))
         self.assertFalse(mod.desktop_allow_once_visible([{"text": "允许一次", "visible": False}]))
 
-    def test_desktop_approval_tracker_retries_and_clears(self):
+    def test_desktop_approval_tracker_latches_success_until_readback_clear(self):
         mod = load_module(); tracker = mod.DesktopApprovalTracker(retry_seconds=1.5)
-        self.assertTrue(tracker.observe(True, now=10.0)); self.assertFalse(tracker.observe(True, now=11.0)); self.assertTrue(tracker.observe(True, now=11.5)); self.assertFalse(tracker.observe(False, now=11.6)); self.assertTrue(tracker.observe(True, now=12.0))
+        self.assertTrue(tracker.observe(True, now=10.0))
+        tracker.record_delivery(True, now=10.0)
+        self.assertFalse(tracker.observe(True, now=11.0))
+        self.assertFalse(tracker.observe(True, now=11.5))
+        self.assertFalse(tracker.observe(False, now=11.6))
+        self.assertTrue(tracker.observe(True, now=12.0))
+
+    def test_desktop_approval_tracker_bounds_failed_delivery_retries(self):
+        mod = load_module()
+        tracker = mod.DesktopApprovalTracker(
+            delivery_retry_seconds=0.5,
+            max_delivery_attempts=2,
+        )
+        self.assertTrue(tracker.observe(True, now=10.0))
+        tracker.record_delivery(False, now=10.0)
+        self.assertFalse(tracker.observe(True, now=10.4))
+        self.assertTrue(tracker.observe(True, now=10.5))
+        tracker.record_delivery(False, now=10.5)
+        self.assertFalse(tracker.observe(True, now=11.0))
 
     def test_desktop_target_filter_accepts_only_codex_pages(self):
         mod = load_module(); targets = [{"type":"page","title":"Codex","webSocketDebuggerUrl":"ws://one"},{"type":"page","title":"Other","webSocketDebuggerUrl":"ws://two"},{"type":"service_worker","title":"Codex","webSocketDebuggerUrl":"ws://three"}]
@@ -215,16 +285,16 @@ class AutoConfirmTests(unittest.TestCase):
     def test_title_match_ignores_auto_confirm_window(self):
         mod = load_module()
 
-        self.assertFalse(mod.title_matches(r"C:\codex-auto-confirm\scripts\codex_auto_confirm.bat"))
-        self.assertTrue(mod.title_matches("my-laptop - Codex CLI"))
+        self.assertFalse(mod.title_matches(r"C:\Users\PC-20260522\.claude\skills\rpa-record-replay\scripts\codex_auto_confirm.bat"))
+        self.assertTrue(mod.title_matches("pc-20260522 - Codex CLI"))
 
     def test_action_required_title_matches_without_machine_name(self):
         mod = load_module()
 
         self.assertTrue(mod.action_required_title_matches("Action Required"))
         self.assertTrue(mod.action_required_title_matches("Action Required - Codex"))
-        self.assertFalse(mod.action_required_title_matches("my-laptop - Codex CLI"))
-        self.assertFalse(mod.action_required_title_matches(r"C:\codex-auto-confirm\scripts\codex_auto_confirm.bat"))
+        self.assertFalse(mod.action_required_title_matches("pc-20260522 - Codex CLI"))
+        self.assertFalse(mod.action_required_title_matches(r"C:\Users\PC-20260522\.claude\skills\rpa-record-replay\scripts\codex_auto_confirm.bat"))
 
     def test_action_required_tracker_fires_once_until_title_clears(self):
         mod = load_module()
@@ -232,7 +302,7 @@ class AutoConfirmTests(unittest.TestCase):
 
         self.assertTrue(tracker.observe("Action Required"))
         self.assertFalse(tracker.observe("Action Required - Codex"))
-        self.assertFalse(tracker.observe("my-laptop - Codex CLI"))
+        self.assertFalse(tracker.observe("pc-20260522 - Codex CLI"))
         self.assertTrue(tracker.observe("Action Required"))
 
     def test_action_required_tracker_retries_by_default(self):
@@ -316,6 +386,7 @@ class AutoConfirmTests(unittest.TestCase):
         mod.running = True
         listener = unittest.mock.MagicMock()
         listener.__enter__.return_value = listener
+        listener.is_alive.return_value = False
 
         with (
             patch.object(mod, "acquire_single_instance", return_value=True),
@@ -329,7 +400,7 @@ class AutoConfirmTests(unittest.TestCase):
         mod.running = True
         listener = unittest.mock.MagicMock()
         listener.__enter__.return_value = listener
-        listener.join.side_effect = lambda: setattr(mod, "running", False)
+        listener.join.side_effect = lambda timeout=None: setattr(mod, "running", False)
 
         with (
             patch.object(mod, "acquire_single_instance", return_value=True),
@@ -337,6 +408,50 @@ class AutoConfirmTests(unittest.TestCase):
             patch.object(mod.threading, "Thread"),
         ):
             self.assertEqual(mod.main(), 0)
+
+    def test_main_returns_nonzero_when_worker_dies_with_listener_still_alive(self):
+        mod = load_module()
+        mod.running = True
+        worker_failed = threading.Event()
+        listener_stopped = threading.Event()
+        results = []
+
+        class ControlledListener:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.stop()
+
+            def join(self, timeout=None):
+                listener_stopped.wait(timeout)
+
+            def is_alive(self):
+                return not listener_stopped.is_set()
+
+            def stop(self):
+                listener_stopped.set()
+
+        listener = ControlledListener()
+        with (
+            patch.object(mod, "acquire_single_instance", return_value=True),
+            patch.object(mod, "release_single_instance") as release_instance,
+            patch.object(mod, "find_codex_process", return_value=(None, None, None)),
+            patch("pynput.keyboard.Listener", return_value=listener),
+            patch.object(mod, "auto_enter_loop", side_effect=RuntimeError("fixture worker failure")),
+            patch.object(threading, "excepthook", side_effect=lambda _args: worker_failed.set()),
+        ):
+            main_thread = threading.Thread(target=lambda: results.append(mod.main()), daemon=True)
+            main_thread.start()
+            try:
+                self.assertTrue(worker_failed.wait(timeout=2))
+                main_thread.join(timeout=1)
+                self.assertFalse(main_thread.is_alive(), "Main kept waiting after its monitor worker died")
+                self.assertEqual(results, [1])
+                release_instance.assert_called_once()
+            finally:
+                listener.stop()
+                main_thread.join(timeout=2)
 
 
 if __name__ == "__main__":

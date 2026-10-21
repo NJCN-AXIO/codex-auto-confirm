@@ -19,7 +19,7 @@ class RecoveryTextTests(unittest.TestCase):
         # No env override in this subprocess.
         self.assertEqual(
             mod.pick_recovery_text("error: 429 Too Many Requests\n继续执行"),
-            "继续执行",
+            "继续！",
         )
 
     def test_default_english_when_ascii_only(self):
@@ -42,28 +42,32 @@ class RecoveryTextTests(unittest.TestCase):
         finally:
             mod.CONFIGURED_RECOVERY_TEXT = None
 
-    def test_send_continue_defaults_to_chinese_for_backcompat(self):
+    def test_send_continue_defaults_to_marked_chinese(self):
         mod = load_module()
         sent = []
         with (
             mock.patch.object(
-                mod, "send_text_via_attached_post",
-                side_effect=lambda hwnd, text: sent.append(text) or True,
+                mod, "_post_messages_via_attached_target",
+                side_effect=lambda hwnd, messages: sent.append(
+                    "".join(chr(key) for _, key, _ in messages[:-3])
+                ) or True,
             ),
-            mock.patch.object(mod, "send_enter", return_value=True),
+            mock.patch.object(mod, "recovery_input_busy", return_value=False),
         ):
             self.assertTrue(mod.send_continue(123))
-        self.assertEqual(sent, ["继续执行"])
+        self.assertEqual(sent, ["继续！"])
 
     def test_send_continue_uses_passed_text(self):
         mod = load_module()
         sent = []
         with (
             mock.patch.object(
-                mod, "send_text_via_attached_post",
-                side_effect=lambda hwnd, text: sent.append(text) or True,
+                mod, "_post_messages_via_attached_target",
+                side_effect=lambda hwnd, messages: sent.append(
+                    "".join(chr(key) for _, key, _ in messages[:-3])
+                ) or True,
             ),
-            mock.patch.object(mod, "send_enter", return_value=True),
+            mock.patch.object(mod, "recovery_input_busy", return_value=False),
         ):
             self.assertTrue(mod.send_continue(123, "continue"))
         self.assertEqual(sent, ["continue"])
