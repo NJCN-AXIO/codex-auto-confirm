@@ -9,7 +9,7 @@ current error snapshot. Window titles alone never authorize an Enter keypress.
 
 from __future__ import annotations
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import ctypes
 import json
@@ -878,7 +878,7 @@ def _recovery_status_active(text: str) -> bool:
 
 
 def _working_status_active(text: str) -> bool:
-    lines = _recovery_output_lines(text)
+    lines = [line for line in _recovery_output_lines(text) if line.strip()]
     assistant_paragraph_indent = None
     # UIA can split the status label and its duration/interrupt suffix across
     # adjacent TermControl ranges.  Reassemble a short local window so a live
@@ -919,7 +919,10 @@ def _working_status_active(text: str) -> bool:
     # quoted/indented Working example in a submitted message cannot suppress
     # a real current error. This still retains live status rows above the
     # cropped viewport.
-    full_lines = _recovery_output_lines(text, status_area_only=False)
+    full_lines = [
+        line for line in _recovery_output_lines(text, status_area_only=False)
+        if line.strip()
+    ]
     full_assistant_paragraph_indent = None
     for index, raw_line in enumerate(full_lines):
         normalized = _status_candidate(raw_line)
@@ -1478,6 +1481,77 @@ class ActionRequiredTracker:
         self.last_fire_at = None
 
 
+def _approval_request_key(text: str) -> str | None:
+    """Identify request content, excluding earlier transcript and menu redraws."""
+    lines = (text or "").splitlines()
+    headings = [
+        index for index, line in enumerate(lines)
+        if any(normalize_terminal_text(line) == heading
+               or normalize_terminal_text(line).startswith(heading + " ")
+               for heading in APPROVAL_HEADINGS)
+    ]
+    if not headings:
+        return None
+    start = headings[-1]
+    selected = [index for index in range(start + 1, len(lines))
+                if re.match(r"^[›»>]\s*\d+[.)]\s+", normalize_terminal_text(lines[index]))]
+    option = selected[-1] if selected else next((
+        index for index in range(start + 1, len(lines))
+        if re.match(r"^\d+[.)]\s+", normalize_terminal_text(lines[index]))
+        and any(
+            re.sub(r"^\d+[.)]\s+", "", normalize_terminal_text(lines[index])) == allowed
+            or re.sub(r"^\d+[.)]\s+", "", normalize_terminal_text(lines[index])).startswith(allowed + " ")
+            for allowed in APPROVAL_ONCE_OPTIONS
+        )
+    ), None)
+    if option is None or not any(line.strip() for line in lines[start + 1:option]):
+        # A readable menu may still have its command body clipped by UIA.
+        return None
+    heading = normalize_terminal_text(lines[start])
+    if heading != "would you like to run the following command?":
+        # Other overlays lack a verified stable request-body boundary. Keep
+        # their existing episode latch rather than identify volatile ranges.
+        return None
+    command = next((index for index in range(start + 1, option)
+                    if lines[index].lstrip().startswith("$ ")), None)
+    if command is None:
+        return None
+    # Thread/Environment/Reason ranges can disappear independently. The
+    # command itself identifies this request without those volatile rows.
+    start = command
+    body = [line.rstrip() for line in lines[start:option]]
+    while body and not body[-1].strip():
+        body.pop()
+    padding = min(len(line) - len(line.lstrip()) for line in body if line.strip())
+    return heading + "\n" + "\n".join(line[padding:] for line in body)
+
+
+def _approval_prompt_cleared(text: str) -> bool:
+    """Require a later processing status or an empty composer, not missing UIA."""
+    lines = (text or "").splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        line = normalize_terminal_text(lines[index])
+        if line.startswith(TERMINAL_PROMPT_MARKERS):
+            content = re.sub(r"[\u2800-\u28ff]", "", line[1:]).strip()
+            tail = lines[index + 1:]
+            if content in ("", "ask codex to do anything") and (
+                any(_terminal_footer_line(row) for row in tail)
+                and _terminal_footer_tail(tail)
+            ):
+                return True
+            break
+    last_menu_row = -1
+    for index, raw_line in enumerate(lines):
+        line = normalize_terminal_text(raw_line)
+        if (
+            any(line == heading or line.startswith(heading + " ") for heading in APPROVAL_HEADINGS)
+            or re.match(r"^(?:[›»>]\s*)?\d+[.)]\s+(?:yes|no)\b", line)
+            or ACTION_REQUIRED_CONFIRMATION_FOOTER in line
+        ):
+            last_menu_row = index
+    return _working_status_active("\n".join(lines[last_menu_row + 1:]))
+
+
 class ApprovalPromptTracker:
     """Edge-trigger a semantic TUI approval prompt per terminal window."""
 
@@ -1499,16 +1573,31 @@ class ApprovalPromptTracker:
         self.last_delivery_at: float | None = None
         self.delivery_attempts = 0
         self.delivery_pending = False
+        self.request_key: str | None = None
+        self.request_states: dict[str, tuple] = {}
 
-    def observe(self, is_visible: bool, now: float | None = None) -> bool:
+    def observe(self, is_visible: bool | None, now: float | None = None,
+                *, request_key: str | None = None) -> bool:
+        if is_visible is None:
+            return False
         now = time.monotonic() if now is None else now
         if not is_visible:
-            self.visible = False
-            self.last_fire_at = None
-            self.last_delivery_at = None
-            self.delivery_attempts = 0
-            self.delivery_pending = False
+            self.reset()
             return False
+
+        if request_key is not None and request_key != self.request_key:
+            if self.visible and self.request_key is None:
+                # First full body after an options-only read is the same menu.
+                self.request_key = request_key
+                self._remember_request()
+            else:
+                if request_key not in self.request_states and len(self.request_states) >= 128:
+                    # Never evict delivered identities and reauthorize old text.
+                    return False
+                state = self.request_states.get(request_key, (False, None, None, 0, False))
+                (self.visible, self.last_fire_at, self.last_delivery_at,
+                 self.delivery_attempts, self.delivery_pending) = state
+                self.request_key = request_key
 
         if self.visible:
             if not self.delivery_pending:
@@ -1537,6 +1626,14 @@ class ApprovalPromptTracker:
         self.last_fire_at = now
         self.delivery_attempts += 1
         self.delivery_pending = not delivered
+        self._remember_request()
+
+    def _remember_request(self) -> None:
+        if self.request_key is not None:
+            self.request_states[self.request_key] = (
+                self.visible, self.last_fire_at, self.last_delivery_at,
+                self.delivery_attempts, self.delivery_pending,
+            )
 
     def reset(self) -> None:
         self.visible = False
@@ -1544,6 +1641,8 @@ class ApprovalPromptTracker:
         self.last_delivery_at = None
         self.delivery_attempts = 0
         self.delivery_pending = False
+        self.request_key = None
+        self.request_states.clear()
 
 
 def window_title(hwnd: int) -> str:
@@ -2131,7 +2230,9 @@ def process_codex_approval_snapshots_multi(
         tracker = trackers.setdefault(hwnd, ApprovalPromptTracker())
         if any(_terminal_draft_visible(str(item.get("text", ""))) for item in window_snapshots):
             continue
-        visible = any(
+        menus = [
+            item for item in window_snapshots
+            if (
             eligible_codex_snapshot(item)
             and (
                 codex_approval_prompt_visible(str(item.get("text", "")))
@@ -2140,15 +2241,26 @@ def process_codex_approval_snapshots_multi(
                     and action_required_options_visible(str(item.get("text", "")))
                 )
             )
-            for item in window_snapshots
-        ) and not any(
+            )
+        ]
+        visible = bool(menus) and not any(
             _recovery_status_active(str(item.get("text", "")))
             and not codex_approval_prompt_visible(str(item.get("text", "")))
             for item in window_snapshots
         )
         if visible and recovery_input_busy(hwnd):
             continue
-        if not tracker.observe(visible):
+        keys = {_approval_request_key(str(item.get("text", ""))) for item in menus}
+        keys.discard(None)
+        if len(keys) > 1:
+            continue
+        observed = True if visible else (
+            False if not menus and any(
+                _approval_prompt_cleared(str(item.get("text", "")))
+                for item in window_snapshots
+            ) else None
+        )
+        if not tracker.observe(observed, request_key=next(iter(keys), None)):
             continue
         try:
             delivered = bool(sender(hwnd))

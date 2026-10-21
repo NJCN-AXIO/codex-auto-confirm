@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-10-21
+
+### Fixed / 修复
+
+- Recognize Working labels, spinners and durations split across UIA ranges
+  with intervening blank lines; stop capacity continuation retries while busy.
+- Confirm consecutive distinct command requests even when UIA misses the
+  intervening clear. Preserve each request's delivery latch and failure budget.
+- Treat empty/partial menu reads as unknown. Missing command bodies or changing
+  metadata cannot reauthorize an already delivered approval.
+- 修复 Working 拆行夹空行时误续接、连续不同命令漏确认，以及残缺菜单读回引发重复确认。
+
+[1.3.1]: https://github.com/NJCN-AXIO/codex-auto-confirm/releases/tag/v1.3.1
+
 ## [1.3.0] - 2026-10-21
 
 ### Fixed / 修复

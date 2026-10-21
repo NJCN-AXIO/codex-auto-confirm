@@ -16,6 +16,19 @@ The semantic snapshot processor owns terminal input. A current approval defers
 recovery in the same window. Successful approval delivery is latched until an
 authoritative clear; failed posts retry only within the failure budget.
 
+Command requests are identified from the latest heading and the `$ command`
+block, preserving command case, internal spacing and line breaks. Transcript
+prefixes and independently missing Thread/Environment/Reason ranges do not
+create requests. Each command keeps its own delivery latch and failure budget,
+so A/B/A redraws cannot replay A. Without a stable command body, including
+non-command overlays, retain the existing episode latch. At 128 remembered
+requests input pauses until a processing/empty-composer clear; identities are
+never evicted to make old requests eligible again.
+
+Empty, heading-only, options-only or footer-only reads are unknown. A later
+Working/Compacting status or an empty composer with a recognized terminal
+footer proves clear. Old Working text above a current menu cannot clear it.
+
 ## Drafts, panes and focus
 
 - Nonempty composer rows (`›`, `»`, `>`), wrapped text, multiline drafts and
@@ -61,7 +74,9 @@ the same episode. Each HWND is independent.
 
 - Current `Working (duration)` or `Compacting context (duration)` stops retries.
   Seconds/minutes/hours and localized units are accepted; `esc to interrupt`
-  is optional. Known spinners may split label and duration. Quoted/indented
+  is optional. Known spinners may split label and duration, including blank UIA
+  ranges between them. Both scans join at most three nonempty rows and retain
+  the existing decoration/prose guards. Quoted/indented
   examples and arbitrary prose never qualify.
 - Working/Compacting binds a still-visible old error to a barrier. If redraw
   drops that row, the stale signature stays quiet. A clean processing readback
@@ -139,3 +154,11 @@ Publish main after these checks pass. Require Windows Tests for the exact commit
 before tagging. The existing Release workflow builds the Windows EXE; read back
 the tag SHA, successful workflow and nonempty `codex-auto-confirm.exe` asset
 before claiming publication.
+
+The v1.3.1 follow-up records deterministic RED/GREEN replays for split Working,
+consecutive requests, partial menus, metadata loss and per-request retry budgets.
+A reported stuck live window was captured with a complete eligible menu, no
+draft and an unambiguous target. After the corrected local monitor was reloaded,
+read-only UIA showed the menu gone and Working active. Initial passive sampling
+had not captured a failure; recording-sender tests never inject test messages
+into real conversations.

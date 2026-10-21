@@ -72,7 +72,9 @@ yank focus away from whatever you are doing.
 - **Focus-safe**: keyboard input is delivered with `PostMessageW` /
   `WM_CHAR` directly to the terminal's `InputSite`; the foreground window stays
   yours.
-- **Edge-triggered**: a prompt is confirmed exactly once until it clears.
+- **Request tracking**: consecutive different command requests can be confirmed
+  even if the intervening clear is missed. Partial menu reads preserve the
+  delivered request's latch and failed-post budget.
 - **Single-instance**: a named Windows mutex prevents duplicate monitors.
 - **Supervised restart**: the `.bat` launcher restarts the Python monitor after
   a crash, with a real delay even when hidden. Console and tray modes detect
