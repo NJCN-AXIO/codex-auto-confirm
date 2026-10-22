@@ -33,10 +33,10 @@ Draft text, recent typing, an explicit interruption, or an ambiguous pane blocks
 ## Real usage / 实际运行
 
 Captured from a live Codex CLI session in Windows Terminal on **2026-10-22**.
-The demo command only prints a line of text. These are cropped screenshots of
+The approval demo command only prints a line of text. These are cropped screenshots of
 the actual approval, command result and watchdog console.
 
-以下为 Windows Terminal 中的真实运行截图，仅裁剪无关区域。演示命令只打印一行文字。
+以下为 Windows Terminal 中的真实运行截图，仅裁剪无关区域。授权演示命令只打印一行文字。
 
 **1. A real permission prompt / 真实授权菜单**
 
@@ -55,6 +55,24 @@ The console records the background Enter delivery and waits for menu readback.
 控制台记录后台发送 Enter，并等待授权菜单状态读回。
 
 ![Actual watchdog console showing Enter delivery and menu readback waiting](docs/screenshots/monitor.png)
+
+### Error recovery / 报错后自动发送“继续！”
+
+**Local fault injection, real CLI and watchdog.** A loopback test endpoint returns
+HTTP 429 or 503 to an isolated Codex session. The running watchdog automatically
+submits `继续！`; the endpoint receives that exact user message and returns a test
+response. The success text comes from the local test service.
+
+**本地故障注入实拍：** 测试接口实际返回 429/503，真实 Codex CLI 显示报错，
+现有守护程序自动提交“继续！”。接口确认收到该消息后返回测试响应；成功文字由本地测试服务生成。
+
+**HTTP 429 — Too Many Requests → 自动发送“继续！”**
+
+![Real Codex CLI showing HTTP 429, automatically submitted 继续！ and local test response](docs/screenshots/recovery-429.png)
+
+**HTTP 503 — Service Unavailable → 自动发送“继续！”**
+
+![Real Codex CLI showing HTTP 503, automatically submitted 继续！ and local test response](docs/screenshots/recovery-503.png)
 
 Capture details: [`docs/RUNBOOK.md`](docs/RUNBOOK.md#readme-screenshot-provenance).
 
@@ -276,7 +294,9 @@ codex-auto-confirm/
 │   └── screenshots/                  # Real Windows Terminal captures
 │       ├── approval.png
 │       ├── approved.png
-│       └── monitor.png
+│       ├── monitor.png
+│       ├── recovery-429.png
+│       └── recovery-503.png
 ├── pyproject.toml
 ├── requirements.txt
 ├── CHANGELOG.md
