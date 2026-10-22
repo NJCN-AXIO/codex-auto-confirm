@@ -178,3 +178,38 @@ draft and an unambiguous target. After the corrected local monitor was reloaded,
 read-only UIA showed the menu gone and Working active. Initial passive sampling
 had not captured a failure; recording-sender tests never inject test messages
 into real conversations.
+
+## README screenshot provenance
+
+On 2026-10-22, the README's drawn schematic was replaced with actual Windows
+Terminal screenshots from a live Codex CLI session and its running watchdog.
+The permission request ran this harmless command:
+
+```powershell
+rtk proxy python -X utf8 -c "print('Approval received. The watchdog handled this prompt automatically.')"
+```
+
+The watchdog accepted the one-time permission prompt. A screenshot burst captured
+the real menu, then the same command's approval/result and a current Working
+status. The running monitor's console separately recorded background Enter
+delivery to that terminal (HWND `8457658`) and waiting for menu readback. A queued
+Enter log alone is not acceptance evidence; the executed command in `approved.png`
+provides the readback. The printed sentence is demo output, not a monitor status.
+
+| Asset | Captured content | Native crop size |
+| --- | --- | --- |
+| `screenshots/approval.png` | Actual permission menu, selected `Yes, proceed` | 1084 × 290 |
+| `screenshots/approved.png` | Same command approved/executed, then Working | 1084 × 156 |
+| `screenshots/monitor.png` | Actual watchdog console log | 902 × 121 |
+
+Only rectangular crops and lossless PNG encoding were applied. Terminal text,
+UI and logs were not drawn, replaced or generated. Unrelated transcript content,
+window title bars and empty space were cropped out. Raw captures and their crop
+coordinates/hashes remain in the maintainer's local diagnostics; do not publish
+full desktop captures containing other sessions. These images demonstrate the
+CLI approval path, not a staged error-recovery or Codex Desktop dialog.
+
+For future updates, capture the live prompt and its authoritative outcome in the
+same session, inspect every final image for private content, verify referenced
+paths and image dimensions, and run `git diff --check`. Documentation/assets-only
+updates do not require a new EXE release.

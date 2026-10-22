@@ -30,13 +30,33 @@ Draft text, recent typing, an explicit interruption, or an ambiguous pane blocks
 > only run the CLI flow end-to-end; the desktop path is included as-is and is
 > community-tested at best.
 
-![demo](docs/demo.gif)
+## Real usage / 实际运行
 
-> Stop babysitting Codex: let it ask "Yes, proceed?" while you keep working in
-> another window. When it hits a `429 Too Many Requests`, `502/503/504`, a model
-> capacity error, or a dropped stream, the monitor types `继续！` / `continue`
-> for you and waits for the authoritative `Working …` status before it considers
-> the loop recovered.
+Captured from a live Codex CLI session in Windows Terminal on **2026-10-22**.
+The demo command only prints a line of text. These are cropped screenshots of
+the actual approval, command result and watchdog console.
+
+以下为 Windows Terminal 中的真实运行截图，仅裁剪无关区域。演示命令只打印一行文字。
+
+**1. A real permission prompt / 真实授权菜单**
+
+![Live Codex permission prompt with Yes, proceed selected](docs/screenshots/approval.png)
+
+**2. Automatically approved, command completed / 自动确认后执行完成**
+
+The prompt disappears, the command runs, and Codex shows `Working` again.
+授权菜单消失，命令执行完成，Codex 回到 `Working` 状态。
+
+![Same command approved and executed, followed by Working status](docs/screenshots/approved.png)
+
+**3. Background watchdog log / 后台守护日志**
+
+The console records the background Enter delivery and waits for menu readback.
+控制台记录后台发送 Enter，并等待授权菜单状态读回。
+
+![Actual watchdog console showing Enter delivery and menu readback waiting](docs/screenshots/monitor.png)
+
+Capture details: [`docs/RUNBOOK.md`](docs/RUNBOOK.md#readme-screenshot-provenance).
 
 ---
 
@@ -253,7 +273,10 @@ codex-auto-confirm/
 │   └── test_recovery_text.py         # i18n / language detection tests
 ├── docs/
 │   ├── RUNBOOK.md                    # Detailed behavior & tuning reference
-│   └── demo.gif                      # Animated schematic
+│   └── screenshots/                  # Real Windows Terminal captures
+│       ├── approval.png
+│       ├── approved.png
+│       └── monitor.png
 ├── pyproject.toml
 ├── requirements.txt
 ├── CHANGELOG.md
