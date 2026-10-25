@@ -30,7 +30,16 @@ Draft text, recent typing, an explicit interruption, or an ambiguous pane blocks
 > only run the CLI flow end-to-end; the desktop path is included as-is and is
 > community-tested at best.
 
-## v1.3.3 / 本次更新
+## v1.3.4 / 本次更新
+
+- Fixes a further missed YES/NO confirmation when a native approval heading
+  is indented under `Running` after previously submitted input.
+- Recognizes only a complete overlay with one outer-column selection and a
+  confirmation footer; interleaved drafts and old selected rows block input.
+- 修复历史输入和 Running 输出后的缩进审批菜单漏确认；补充两种跨草稿误触回归。
+  本次修复通过三轮真实终端单回车收件；有限验收不代表整晚运行保证。
+
+### v1.3.3 capabilities / 已有功能
 
 - Recognizes the complete `Field 1/1` MCP permission form when **1. Allow**
   is explicitly selected. Session, permanent, cancel and incomplete choices block input.

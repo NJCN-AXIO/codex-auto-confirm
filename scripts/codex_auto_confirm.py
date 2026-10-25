@@ -9,7 +9,7 @@ current error snapshot. Window titles alone never authorize an Enter keypress.
 
 from __future__ import annotations
 
-__version__ = "1.3.3"
+__version__ = "1.3.4"
 
 import copy
 import ctypes
@@ -1054,6 +1054,17 @@ def _recovery_output_lines(text: str, *, status_area_only: bool = True) -> list[
         if in_prompt and (not line.strip() or line[0].isspace()):
             continue
         in_prompt = False
+        if in_tool and normalize_terminal_text(line) in APPROVAL_HEADINGS:
+            # Native overlays indent their heading/body below the Running row,
+            # but paint their selected control at the outer terminal column.
+            # An indented printed menu remains tool output; a live draft above
+            # still owns this line through the in_prompt guard.
+            tail = lines[index + 1:]
+            prompts = [row for row in tail if row.startswith(TERMINAL_PROMPT_MARKERS)]
+            if (len(prompts) == 1 and re.match(r"^[›»>]\s*\d+[.)]\s+", prompts[0])
+                    and next((normalize_terminal_text(row) for row in reversed(tail) if row.strip()), "")
+                    == ACTION_REQUIRED_CONFIRMATION_FOOTER):
+                in_tool = False
         if re.match(r"^[•◦]\s+(?:ran|running)\b", line, re.IGNORECASE):
             in_tool = True
             continue

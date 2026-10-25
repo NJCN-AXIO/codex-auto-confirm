@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.3.4] - 2026-10-25
+
+### Fixed / 修复
+
+- Recognize the current native YES/NO overlay when its exact heading is
+  indented below a Running row and historical input has already been submitted.
+- Release tool-output ownership only for one top-level numbered selection and
+  a complete final confirmation footer. Do not cross intervening drafts or
+  borrow a different selected row. Existing one-time selection, input guards,
+  request identities, readback delay and three-post budget remain in force.
+- 修复 Running 下方缩进审批标题被当作工具输出，导致 YES/NO 未自动回车的问题；
+  增加八项回归，并修复独立审查发现的两种跨用户草稿误判。
+
+### Verification / 验收
+
+- Old-owner real terminal reproduction: zero sends/receipts and timeout.
+  Final-owner real UIA/sender acceptance: 3/3 single CR receipts, no extras,
+  maximum 0.406 seconds. Delivery preserved foreground; fixture ran no commands.
+- All 296 installed Windows regressions passed. Public regressions and exact
+  commit Windows CI gate publication. This is bounded fixture evidence;
+  an overnight soak has not been performed.
+
+[1.3.4]: https://github.com/NJCN-AXIO/codex-auto-confirm/releases/tag/v1.3.4
+
 ## [1.3.3] - 2026-10-25
 
 ### Fixed / 修复

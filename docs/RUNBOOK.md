@@ -1,5 +1,36 @@
 # Runbook — Codex Auto Confirm
 
+## v1.3.4: native approval after Running
+
+A production capture showed a complete selected `Yes, proceed` menu after
+submitted input and a native Running row. The old owner discarded its indented
+heading as tool output, then interpreted the outer-column selection as a
+draft. Exact-record replay and an isolated real terminal both produced zero
+sends with the old owner.
+
+`_recovery_output_lines` now ends that tool block only at an exact approval
+heading when the rest of the range contains exactly one top-level prompt,
+that prompt is a numbered selection and the final nonblank row is the complete
+confirmation footer. Existing live-composer ownership still takes precedence.
+An old selected row cannot bridge a draft to another selected row. Permanent
+or denial selections, pane/input guards, request identity, fresh readback and
+the hard three-post limit remain on the existing approval path.
+
+Independent read-only review found two composer-crossing cases; each was
+reproduced RED and retained as a regression before final review passed.
+Eight focused regressions and all 296 installed Windows tests passed. With
+the final owner, the real UIA/original sender fixture received 3/3 single CRs
+and no extras, maximum 0.406 s. The receiver executed no commands or MCP calls.
+Foreground was unchanged during delivery. No overnight soak is claimed.
+
+On recurrence, correlate HWND/time with the local pre-delivery journal; a
+successful post is not proof of acceptance. Do not restart the worker to retry
+an approval because in-memory budgets would be lost. A deployment requires
+fresh authoritative clear states first. Action Required titles can be stale
+even during current Working; semantic status is the readback authority.
+Exit an old installation before launching the new EXE; workers do not hot-reload.
+Raw journals/captures stay private and are excluded from releases.
+
 ## v1.3.3 operation and evidence
 
 ### MCP single-field form
