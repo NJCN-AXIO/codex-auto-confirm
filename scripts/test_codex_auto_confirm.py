@@ -103,7 +103,7 @@ class AutoConfirmTests(unittest.TestCase):
         snapshot = {
             "class": "CASCADIA_HOSTING_WINDOW_CLASS",
             "hwnd": 123,
-            "title": "diagnose CODEX CLI | PC-20260522",
+            "title": "diagnose CODEX CLI | EXAMPLE-PC",
             "text": "The transcript mentions codex_auto_confirm.py",
         }
         self.assertTrue(mod.eligible_codex_snapshot(snapshot))
@@ -113,11 +113,11 @@ class AutoConfirmTests(unittest.TestCase):
         snapshot = {
             "class": "CASCADIA_HOSTING_WINDOW_CLASS",
             "hwnd": 456,
-            "title": "E:\\shopee-auto-lister - Windows Terminal",
+            "title": "E:\\example-project - Windows Terminal",
             "text": (
                 "Would you like to make the following edits?\n"
                 "Description: Apply proposed file edits\n"
-                "Destination: E:\\shopee-auto-lister\\.git\\info\\exclude\n"
+                "Destination: E:\\example-project\\.git\\info\\exclude\n"
                 "1. Yes, proceed (y)2. Yes, and don't ask again for these files (a)"
                 "3. No, and tell Codex what to do differently (esc)"
             ),
@@ -251,7 +251,6 @@ class AutoConfirmTests(unittest.TestCase):
 
             self.assertEqual(calls, [
                 ("post", 12345, mod.WM_KEYDOWN, mod.VK_RETURN, 0x001C0001),
-                ("post", 12345, mod.WM_CHAR, mod.VK_RETURN, 0x001C0001),
                 ("post", 12345, mod.WM_KEYUP, mod.VK_RETURN, 0xC01C0001),
             ])
         finally:
@@ -285,16 +284,16 @@ class AutoConfirmTests(unittest.TestCase):
     def test_title_match_ignores_auto_confirm_window(self):
         mod = load_module()
 
-        self.assertFalse(mod.title_matches(r"C:\Users\PC-20260522\.claude\skills\rpa-record-replay\scripts\codex_auto_confirm.bat"))
-        self.assertTrue(mod.title_matches("pc-20260522 - Codex CLI"))
+        self.assertFalse(mod.title_matches(r"C:\Users\EXAMPLE-PC\.claude\skills\rpa-record-replay\scripts\codex_auto_confirm.bat"))
+        self.assertTrue(mod.title_matches("example-pc - Codex CLI"))
 
     def test_action_required_title_matches_without_machine_name(self):
         mod = load_module()
 
         self.assertTrue(mod.action_required_title_matches("Action Required"))
         self.assertTrue(mod.action_required_title_matches("Action Required - Codex"))
-        self.assertFalse(mod.action_required_title_matches("pc-20260522 - Codex CLI"))
-        self.assertFalse(mod.action_required_title_matches(r"C:\Users\PC-20260522\.claude\skills\rpa-record-replay\scripts\codex_auto_confirm.bat"))
+        self.assertFalse(mod.action_required_title_matches("example-pc - Codex CLI"))
+        self.assertFalse(mod.action_required_title_matches(r"C:\Users\EXAMPLE-PC\.claude\skills\rpa-record-replay\scripts\codex_auto_confirm.bat"))
 
     def test_action_required_tracker_fires_once_until_title_clears(self):
         mod = load_module()
@@ -302,7 +301,7 @@ class AutoConfirmTests(unittest.TestCase):
 
         self.assertTrue(tracker.observe("Action Required"))
         self.assertFalse(tracker.observe("Action Required - Codex"))
-        self.assertFalse(tracker.observe("pc-20260522 - Codex CLI"))
+        self.assertFalse(tracker.observe("example-pc - Codex CLI"))
         self.assertTrue(tracker.observe("Action Required"))
 
     def test_action_required_tracker_retries_by_default(self):
@@ -360,7 +359,7 @@ class AutoConfirmTests(unittest.TestCase):
         self.assertFalse(tracker.observe("Action Required - Codex", now=11.0))
         self.assertTrue(tracker.observe("Action Required - Codex", now=11.5))
         self.assertFalse(tracker.observe("Action Required - Codex", now=12.0))
-        self.assertFalse(tracker.observe("pc-20260522 - Codex CLI", now=12.1))
+        self.assertFalse(tracker.observe("example-pc - Codex CLI", now=12.1))
         self.assertTrue(tracker.observe("Action Required", now=12.2))
 
     def test_plain_escape_does_not_exit_global_listener(self):

@@ -14,14 +14,14 @@ A Windows watchdog for **OpenAI Codex CLI** that automatically presses
 **English:** A Windows watchdog for OpenAI Codex CLI that safely auto-confirms
 one-shot prompts and recovers transient errors without stealing focus. Ordinary
 transient errors are continued once after successful delivery. A persistent model
-capacity warning is retried every 3 seconds; an explicit account-pool
-`auth_unavailable` 503 is retried every 5 seconds. A fresh authoritative
+capacity warning or HTTP 503 is retried every 3 seconds while fresh error
+evidence remains. A fresh authoritative
 `Working (duration)` or `Compacting context (duration)` status stops retries.
 Draft text, recent typing, an explicit interruption, or an ambiguous pane blocks input.
 
 **中文：** Windows 下的 OpenAI Codex CLI 守护工具，可在不抢占焦点的情况下
 自动确认一次性授权并恢复瞬时错误。普通瞬时错误成功发送一次后等待状态确认；
-持续的模型容量不足每 3 秒重试，明确的账号池 `auth_unavailable` 503 每 5 秒重试，
+持续的模型容量不足或 HTTP 503 每 3 秒重试，
 直到检测到新的权威状态 `Working (duration)` 或 `Compacting context (duration)`。
 草稿、近期键盘输入、主动中断及无法确定输入目标的多窗格都会阻止自动输入。
 
@@ -29,6 +29,21 @@ Draft text, recent typing, an explicit interruption, or an ambiguous pane blocks
 > CDP path aimed at the Codex Desktop "Allow once" dialog, but the author has
 > only run the CLI flow end-to-end; the desktop path is included as-is and is
 > community-tested at best.
+
+## v1.3.3 / 本次更新
+
+- Recognizes the complete `Field 1/1` MCP permission form when **1. Allow**
+  is explicitly selected. Session, permanent, cancel and incomplete choices block input.
+- Repairs a verified historical YES/NO viewport, checks subsequent visible
+  readback, and reports stalled approvals with bounded reader recovery.
+- Delivers one Enter through the terminal InputSite, including fallback;
+  English/custom recovery text, tray and EXE packaging are preserved.
+- 新增 MCP 单次 Allow 表单识别；修复 YES/NO 停留历史视口、重复回车和回退投递；
+  增加卡住状态及有上限的读取器恢复。不会自动选择会话或永久授权。
+
+Existing installations must exit the old monitor with F10 or tray Exit before
+launching the new EXE. The single-instance guard does not hot-reload an old worker.
+更新后先用 F10 或托盘 Exit 退出旧进程，再启动新版；覆盖 EXE 不会热更新。
 
 ## Real usage / 实际运行
 
@@ -102,9 +117,8 @@ yank focus away from whatever you are doing.
   line it posts `继续！` or `continue` + <kbd>Enter</kbd>, then waits for an authoritative
   `Working (… • esc to interrupt)` or `Compacting context (…)` status before
   re-arming. Successful sends are not repeated just because UIA readback is
-  delayed. Persistent capacity warnings retry every 3 seconds; explicit
-  `auth_unavailable` account-pool 503 errors retry every 5 seconds until an
-  authoritative working status appears. Stale
+  delayed. Persistent capacity warnings and HTTP 503 errors retry every
+  3 seconds until an authoritative working status appears. Stale
   transcript lines and historical errors are ignored.
 - **Multi-window aware**: each terminal HWND is tracked independently.
 - **Focus-safe**: keyboard input is delivered with `PostMessageW` /
@@ -210,10 +224,10 @@ All tuning is via environment variables — no config file to edit.
 | `CODEX_AUTO_CONFIRM_CDP_PORT` | `27374` | Local CDP port used for the Codex Desktop "Allow once" dialog. |
 | `CODEX_AUTO_CONFIRM_RECOVERY_TEXT` | _(auto)_ | Pin the exact "continue" command sent after a recoverable error. Default: auto-detect Chinese vs English. |
 | `CODEX_AUTO_CONFIRM_RECOVERY_POLL_SECONDS` | `0.25` | How often the UIA scanner wakes up. |
-| `CODEX_AUTO_CONFIRM_AUTH_UNAVAILABLE_RETRY_SECONDS` | `5.0` | Retry interval for an `auth_unavailable` / no-available-accounts 503 until an authoritative working status appears (minimum 1 second). |
 | `CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS` | `1.5` | Timeout for one in-flight UIA scan. |
+| `CODEX_AUTO_CONFIRM_SNAPSHOT_MAX_AGE_SECONDS` | `0.5` | Discard nonempty UIA responses older than this from scan start (minimum 0.1 s). |
 | `CODEX_AUTO_CONFIRM_CONFIRMATION_TIMEOUT_SECONDS` | `5.0` | Compatibility setting; a successful delivery is not resent while the same error remains visible. |
-| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `3.0` | Retry interval for persistent capacity warnings (minimum 1.2 seconds). |
+| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `3.0` | Retry interval for persistent capacity warnings and HTTP 503 (minimum 1.2 seconds). |
 | `CODEX_AUTO_CONFIRM_POWERSHELL` | `powershell.exe` | Path to the PowerShell executable used for the UIA helper. |
 
 See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the full list and the exact
@@ -230,6 +244,18 @@ error signatures that trigger recovery.
 - It intentionally does **not** read passwords or type into any field that is
   not a Codex approval / error prompt.
 - Still, run it only on machines and sessions you control.
+
+### Local diagnostic data / 本地诊断数据
+
+The health JSON contains state, counters and request digests. The rotating
+`codex-recovery-decisions.jsonl` also retains up to 16,000 characters from each
+initial/fresh terminal snapshot and may contain private terminal text. Source
+mode stores these under `scripts/run_logs`; the EXE stores them beside
+`watchdog.log` under `%APPDATA%\codex-auto-confirm`. Each journal rotates at
+2 MiB with one previous file. Inspect and redact diagnostics before sharing.
+
+健康 JSON 保存状态摘要；决策日志还会保存部分终端原文，可能含隐私。源码版位于
+`scripts/run_logs`，EXE 版位于 `%APPDATA%\codex-auto-confirm`。分享前请检查并脱敏。
 
 ## Troubleshooting
 

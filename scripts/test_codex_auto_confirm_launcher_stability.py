@@ -37,7 +37,8 @@ class HiddenLauncherStabilityTests(unittest.TestCase):
                     })
                     result = subprocess.run(
                         ["cmd.exe", "/d", "/c", str(BATCH_PATH)],
-                        stdin=stdin_mode, capture_output=True, env=env, text=True, encoding="mbcs", errors="replace",
+                        stdin=stdin_mode, capture_output=True,
+                        env=env, text=True, encoding="mbcs", errors="replace",
                         creationflags=subprocess.CREATE_NO_WINDOW,
                         timeout=12,
                     )

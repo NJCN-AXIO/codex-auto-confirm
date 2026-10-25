@@ -1,5 +1,80 @@
 # Runbook — Codex Auto Confirm
 
+## v1.3.3 operation and evidence
+
+### MCP single-field form
+
+Only the full `Field 1/1` server/tool heading, four exact options, submission
+footer and explicitly selected `1. Allow` authorize input. `Allow for this
+session`, `Always allow`, `Cancel`, missing selection and incomplete forms
+block approval and continuation. This uses the existing approval owner and
+three-post request budget. Request keys preserve server/tool/argument case and
+internal string spacing. Native tool output and pasted/numbered drafts cannot
+authorize a form. This support requires visible text; buffer-tail navigation
+currently recognizes the standard YES/NO footer only.
+
+### Historical viewport and Enter delivery
+
+For Action Required, a single pane, no selected text and a verified current
+one-time buffer-tail menu permit view repair. The bounded tail starts at 16,000
+characters and expands once to 65,536 only when the footer exists but the
+selected row is missing. Three attempts are paced immediately, after at least
+one second, then at least three more seconds. Only a later independent visible
+scan can authorize Enter. Navigation cannot replenish the Python post budget.
+
+Enter posts key-down/key-up only. Posting WM_CHAR for Enter as well produced
+two CR characters in a translating terminal message pump. Text continues to use
+WM_CHAR. Windows Terminal fallback resolves the same parent's InputSite;
+partial delivery never falls back or replays Enter. A failed key-up gets only
+key-up cleanup. Focus/global input APIs are not introduced.
+
+### Freshness, health and recovery
+
+Nonempty snapshots older than 0.5 seconds from scan start are unknown. Error
+continuation takes an independent fresh preflight; current Working, queued
+messages, ambiguity, drafts and recent input block it. Persistent capacity/503
+recovery retains its existing handling for cropped/incomplete composer ranges:
+two incomplete fresh preflights can permit a retry based on the original error
+snapshot, while all negative guards still apply. Partial output cannot clear a
+Working barrier. A matching submitted continuation checkpoint distinguishes a
+new failure after Working from an old error redraw. Public language selection
+is bound to the actual successful send for that HWND; another language's draft
+does not become the monitor's own continuation.
+
+The former account-pool five-second environment setting is superseded by the
+common `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` (default three seconds).
+Other errors retain their one-shot successful-delivery policy.
+
+Health writes atomically every two seconds, reports pending as stalled after
+ten seconds and missing fresh UIA after five seconds. Eligible stalled readers
+can refresh after eight seconds, at most twice per episode and once per global
+30 seconds. Python trackers and the hard three-post approval limit remain
+intact. A heartbeat proves monitor activity, not approval acceptance.
+
+Source diagnostics live in `scripts/run_logs`; frozen EXE diagnostics live in
+`%APPDATA%\codex-auto-confirm`, outside `_MEIPASS`. Health contains state,
+counters and request digests. The decision journal includes up to 16,000
+characters from each initial/fresh snapshot and can contain private content;
+it rotates at 2 MiB with one previous file. Inspect/redact before sharing.
+Raw captures, logs, backup files and diagnostic bundles are excluded from releases.
+
+### Bounded acceptance and publication
+
+The prior installed source passed 288 Windows regressions. Isolated real UIA,
+original owner and actual sender tests observed 12/12 main Enter receipts
+(maximum 0.938 s), 3/3 forced fallback (0.750 s), 3/3 marked Chinese continuation
+(0.687 s), and 3/3 MCP-form receipts (0.391 s), each with one CR and no extras.
+Send/scroll operations preserved foreground. The fixture executes no commands
+or actual MCP calls. Classic conhost fallback and a real overnight soak were
+not tested live; this is not a guarantee that every future prompt will match.
+
+Public integration adds language/override preflight-to-Working-to-new-error
+coverage and actual frozen health/journal file readback. The public regression
+suite and Ruff must pass, followed by Windows CI for the exact main commit,
+before tagging. Read back the tag, Release workflow and nonempty EXE asset.
+Installed workers do not hot-reload: exit the old monitor before starting an
+updated source/EXE. A publication operation must not restart the local monitor.
+
 ## Scope and input ownership
 
 Terminal approvals require a fresh visible UIA menu with a selected one-time
@@ -78,11 +153,12 @@ automatic activations.
 | Current error | Successful delivery policy |
 | --- | --- |
 | Model capacity warning | Retry every 3 s while a fresh warning persists. |
-| Account-pool 503 with `auth_unavailable` or `账号池没有可用账号` | Retry every 5 s; reconnecting preserves the interval. |
+| Any current contextual HTTP 503 | Retry every 3 s while fresh error evidence persists. |
 | Other error | One successful continuation per visible episode. |
 
-Failed posts retry every 0.35 s, up to three consecutive failures. Successful
-paced retries do not consume that budget. Every retry needs fresh evidence and
+Failed posts retry every 0.35 s. Non-continuous errors stop after three
+consecutive failures; capacity/503 errors keep paced retries pending. Successful
+paced retries do not consume the failure budget. Every retry needs fresh evidence and
 passes draft/typing guards. Changed wording does not create a second send within
 the same episode. Each HWND is independent.
 
@@ -91,14 +167,14 @@ the same episode. Each HWND is independent.
 - Current `Working (duration)` or `Compacting context (duration)` stops retries.
   Seconds/minutes/hours and localized units are accepted; `esc to interrupt`
   is optional. Known spinners may split label and duration, including blank UIA
-  ranges between them. Both scans join at most three nonempty rows and retain
+  ranges between them. Both scans join at most five nonempty rows and retain
   the existing decoration/prose guards. Quoted/indented
   examples and arbitrary prose never qualify.
 - Working/Compacting binds a still-visible old error to a barrier. If redraw
   drops that row, the stale signature stays quiet. A clean processing readback
   re-arms a later real error.
-- `Reconnecting... n/5` pauses recovery. For account-pool retries it preserves
-  last-send time so a redraw cannot bypass the five-second interval.
+- `Reconnecting... n/5` pauses recovery. When it disappears the existing
+  tracker can recognize a new final-error edge; it does not send while reconnecting.
 - `Conversation interrupted` is an intentional ESC stop. Its barrier survives
   scrolling until a later real Working/Compacting status. Draft quotes cannot
   create this barrier.
@@ -132,11 +208,12 @@ F9 toggles monitoring. F10 exits. Tray menus also toggle startup and open logs.
 | --- | --- | --- |
 | `CODEX_AUTO_CONFIRM_RECOVERY_POLL_SECONDS` | `0.25` | UIA interval; minimum 0.1 s. |
 | `CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS` | `1.5` | One in-flight scan timeout. |
+| `CODEX_AUTO_CONFIRM_SNAPSHOT_MAX_AGE_SECONDS` | `0.5` | Nonempty response age from scan start; minimum 0.1 s. |
+| `CODEX_AUTO_CONFIRM_INCOMPLETE_RETRY_SCANS` | `2` | Incomplete fresh-read threshold for continuous recovery; minimum 2. |
 | `CODEX_AUTO_CONFIRM_HELPER_RESTART_BACKOFF_SECONDS` | `1.0` | Pace helper replacement. |
 | `CODEX_AUTO_CONFIRM_DELIVERY_RETRY_SECONDS` | `0.35` | Failed-post retry interval. |
 | `CODEX_AUTO_CONFIRM_MAX_ATTEMPTS` | `3` | Failure budget; clamped to 1–5. |
-| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `3.0` | Capacity interval; minimum 1.2 s. |
-| `CODEX_AUTO_CONFIRM_AUTH_UNAVAILABLE_RETRY_SECONDS` | `5.0` | Account-pool interval; minimum 1 s. |
+| `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS` | `3.0` | Capacity/503 interval; minimum 1.2 s. |
 | `CODEX_AUTO_CONFIRM_RECOVERY_TEXT` | automatic | Override recovery text. |
 | `CODEX_AUTO_CONFIRM_DESKTOP_POLL_SECONDS` | `1.0` | CDP probe interval. |
 | `CODEX_AUTO_CONFIRM_CDP_PORT` | `27374` | Desktop CDP port. |

@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.3.3] - 2026-10-25
+
+### Fixed / 修复
+
+- Recognize complete single-field MCP permission forms only when the explicit
+  selected option is one-time Allow; keep the original request identity,
+  readback, draft guards and total three-post approval budget.
+- Restore verified historical approval viewports with three paced navigation
+  attempts. Buffer-tail text authorizes navigation only; input still needs a
+  subsequent fresh visible scan.
+- Remove the duplicate Enter character source and route Windows Terminal
+  fallback to the same InputSite. Partial delivery never replays Enter.
+- Discard stale UIA scans, retain Working barriers through partial redraws,
+  and avoid absent-desktop CDP timeouts delaying terminal scans.
+- Preserve public language overrides through fresh preflight and recovery
+  checkpoints; keep packaged health/journals outside the temporary EXE bundle.
+- 修复 YES/NO 漏确认、历史视口卡住、重复回车及回退投递；支持新的 MCP 单次 Allow
+  表单，保留英文/自定义续接、托盘和 EXE 功能。
+
+### Changed / 调整
+
+- Merge the installed capacity/HTTP 503 recovery policy: fresh persistent errors
+  retry at the common three-second semantic interval until processing readback.
+  Other errors retain their successful one-shot latch. The former account-pool
+  five-second setting is superseded by `CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS`.
+- Add an atomic two-second health heartbeat, ten-second stall reporting and
+  reader-only recovery capped at two refreshes per episode with a global
+  30-second cooldown. Input budgets and Python trackers are never reset by it.
+- 明确区分投递与接受；记录健康摘要和本地轮转诊断原文。容量不足及 HTTP 503 统一使用
+  默认三秒重试间隔，Working、队列、草稿、近期输入和主动中断继续阻止自动输入。
+
+### Verification / 验收
+
+- Windows unit/integration regressions cover the public packaging and language
+  seams. Prior isolated real-terminal receiver tests observed 12/12 main Enter,
+  3/3 fallback, 3/3 continuation and 3/3 MCP-form receipts, with one CR each.
+  These are bounded fixture results; no real overnight soak is claimed.
+
+[1.3.3]: https://github.com/NJCN-AXIO/codex-auto-confirm/releases/tag/v1.3.3
+
 All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).

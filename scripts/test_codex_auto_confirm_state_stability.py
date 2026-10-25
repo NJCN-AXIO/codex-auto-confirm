@@ -25,7 +25,7 @@ MENU = (
     "› 1. Yes, proceed (y)\n"
     "  2. No, and tell Codex what to do differently (esc)"
 )
-ACTION_REQUIRED_TITLE = "[ ! ] Action Required | Respond to greeting | PC-20260522"
+ACTION_REQUIRED_TITLE = "[ ! ] Action Required | Respond to greeting | EXAMPLE-PC"
 ACTION_REQUIRED_SELECTED_ONCE_WITHOUT_DENY = (
     "› 1. Yes, proceed (y)\n"
     "  2. Yes, and don't ask again for commands that start with `rtk proxy`\n"
@@ -277,8 +277,9 @@ class ExclusiveWindowActionTests(unittest.TestCase):
         actions = []
         recovery_processor = module.process_codex_recovery_snapshots_multi
 
-        def record_recovery(snapshots, trackers):
-            return recovery_processor(snapshots, trackers, lambda hwnd: actions.append(("continue", hwnd)) or True)
+        def record_recovery(snapshots, trackers, **kwargs):
+            return recovery_processor(snapshots, trackers, lambda hwnd: actions.append(("continue", hwnd)) or True,
+                                      **kwargs)
 
         with (
             patch.object(module, "CodexTerminalReader", return_value=reader),
@@ -418,7 +419,8 @@ class AmbiguousInputTargetTests(unittest.TestCase):
         '''
         result = subprocess.run(
             ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-            input=b"quit\n", capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=10,
+            input=b"quit\n", capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW, timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
         payload = json.loads(result.stdout.decode("utf-8"))

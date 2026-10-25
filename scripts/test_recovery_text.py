@@ -49,7 +49,7 @@ class RecoveryTextTests(unittest.TestCase):
             mock.patch.object(
                 mod, "_post_messages_via_attached_target",
                 side_effect=lambda hwnd, messages: sent.append(
-                    "".join(chr(key) for _, key, _ in messages[:-3])
+                    "".join(chr(key) for _, key, _ in messages[:-2])
                 ) or True,
             ),
             mock.patch.object(mod, "recovery_input_busy", return_value=False),
@@ -64,7 +64,7 @@ class RecoveryTextTests(unittest.TestCase):
             mock.patch.object(
                 mod, "_post_messages_via_attached_target",
                 side_effect=lambda hwnd, messages: sent.append(
-                    "".join(chr(key) for _, key, _ in messages[:-3])
+                    "".join(chr(key) for _, key, _ in messages[:-2])
                 ) or True,
             ),
             mock.patch.object(mod, "recovery_input_busy", return_value=False),

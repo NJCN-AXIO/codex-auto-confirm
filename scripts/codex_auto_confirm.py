@@ -9,9 +9,11 @@ current error snapshot. Window titles alone never authorize an Enter keypress.
 
 from __future__ import annotations
 
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 
+import copy
 import ctypes
+import hashlib
 import json
 import os
 import queue
@@ -38,7 +40,6 @@ ACTION_REQUIRED_TITLE = os.environ.get("CODEX_AUTO_CONFIRM_ACTION_TITLE", "Actio
 IDLE_SECONDS = 1.2
 LOOP_SECONDS = 0.15
 NOT_FOUND_SLEEP_SECONDS = 0.15
-AFTER_ENTER_SLEEP_SECONDS = 0.6
 retry_enter_seconds_raw = os.environ.get("CODEX_AUTO_CONFIRM_RETRY_SECONDS", "2.0")
 RETRY_ENTER_SECONDS = float(retry_enter_seconds_raw) if retry_enter_seconds_raw else None
 RECOVERY_POLL_SECONDS = max(
@@ -48,6 +49,10 @@ RECOVERY_POLL_SECONDS = max(
 RECOVERY_SCAN_TIMEOUT_SECONDS = max(
     0.5,
     float(os.environ.get("CODEX_AUTO_CONFIRM_SCAN_TIMEOUT_SECONDS", "1.5")),
+)
+RECOVERY_SNAPSHOT_MAX_AGE_SECONDS = max(
+    0.1,
+    float(os.environ.get("CODEX_AUTO_CONFIRM_SNAPSHOT_MAX_AGE_SECONDS", "0.5")),
 )
 RECOVERY_HELPER_RESTART_BACKOFF_SECONDS = max(
     0.5,
@@ -60,9 +65,6 @@ RECOVERY_DELIVERY_RETRY_SECONDS = max(
 RECOVERY_SEMANTIC_RETRY_SECONDS = max(
     IDLE_SECONDS,
     float(os.environ.get("CODEX_AUTO_CONFIRM_SEMANTIC_RETRY_SECONDS", "3.0")),
-)
-RECOVERY_AUTH_UNAVAILABLE_RETRY_SECONDS = max(
-    1.0, float(os.environ.get("CODEX_AUTO_CONFIRM_AUTH_UNAVAILABLE_RETRY_SECONDS", "5.0")),
 )
 RECOVERY_MISSING_WINDOW_GRACE_SCANS = max(
     1,
@@ -79,19 +81,23 @@ RECOVERY_MAX_ATTEMPTS = max(
         int(os.environ.get("CODEX_AUTO_CONFIRM_MAX_ATTEMPTS", "3")),
     ),
 )
+RECOVERY_INCOMPLETE_RETRY_SCANS = max(
+    2,
+    int(os.environ.get("CODEX_AUTO_CONFIRM_INCOMPLETE_RETRY_SCANS", "2")),
+)
 DESKTOP_POLL_SECONDS = max(
     0.25,
     float(os.environ.get("CODEX_AUTO_CONFIRM_DESKTOP_POLL_SECONDS", "1.0")),
 )
-# Capacity errors keep a paced recovery pending until Working/Compacting is
-# read back.  Other errors retain the one-shot episode latch.  Failed input
-# posts remain bounded; drafting and physical input defer every capacity retry.
+# Capacity and 503 errors remain pending until processing is read back.
+# Each retry requires fresh error evidence and passes the input guards.
+CONTINUOUS_RECOVERY_SIGNATURES = frozenset(("model-capacity", "http-503"))
 RECOVERY_RETRY_SECONDS = None
 AUTO_CONTINUE_MESSAGE = "\u7ee7\u7eed\uff01"
+TERMINAL_PROMPT_MARKERS = ("›", "»", ">")
 RECOVERY_TEXT_ZH = AUTO_CONTINUE_MESSAGE
 RECOVERY_TEXT_EN = "continue"
 CONFIGURED_RECOVERY_TEXT = os.environ.get("CODEX_AUTO_CONFIRM_RECOVERY_TEXT") or None
-TERMINAL_PROMPT_MARKERS = ("›", "»", ">")
 if getattr(sys, "frozen", False):
     UIA_HELPER_SCRIPT_PATH = os.path.join(
         getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)),
@@ -300,12 +306,71 @@ def eligible_codex_snapshot(snapshot: dict) -> bool:
     )
 
 
+def _mcp_tool_form(text: str) -> dict | None:
+    """Recognize a current MCP form; incomplete/unsafe forms only veto input."""
+    text = text or ""
+    fields = list(re.finditer(r"(?im)^[ \t]*Field\s+(\d+)\s*/\s*(\d+)[ \t]*\r?$", text))
+    if not fields:
+        return None
+    field = fields[-1]
+    prefix = text[:field.start()]
+    # Reuse native output ownership without losing the raw selection marker.
+    if len(_recovery_output_lines(text[:field.end()], status_area_only=False)) <= len(
+        _recovery_output_lines(prefix, status_area_only=False)
+    ):
+        return None
+    # The shorter prefix reuses the existing draft/menu ownership rules. A
+    # numbered composer is still a draft; an actual preceding menu is not.
+    if _terminal_draft_visible(prefix):
+        return None
+    body = text[field.end():]
+    heading = re.match(r'\s*Allow the\s+([\w.-]+)\s+MCP server to run\b', body, re.IGNORECASE)
+    if not heading:
+        return None
+    body = re.sub(r"(?m)^([ \t]*[›»>]?[ \t]*\d+[.)])[ \t]*\r?\n[ \t]*(?=(?:Allow|Always allow|Cancel)\b)",
+                  r"\1 ", body)
+    options = list(re.finditer(r"(?m)^[ \t]*([›»>]?)[ \t]*(\d+)[.)][ \t]+([^\r\n]+)", body))
+    footer = re.search(r"(?im)^[ \t]*enter to submit\s+esc to cancel[ \t]*\r?$", body)
+    after_options = body[options[-1].end():] if options else body[heading.end():]
+    # A newer composer or status makes this an old form, never an approval.
+    if any(row.lstrip().startswith(TERMINAL_PROMPT_MARKERS) for row in after_options.splitlines()):
+        return None
+    if _recovery_status_active(after_options) or (footer and body[footer.end():].strip()):
+        return None
+    result = {"once": False, "request_key": None}
+    complete_heading = re.match(r'\s*Allow the\s+([\w.-]+)\s+MCP server to run\s+tool\s*["`]([\w.-]+)["`]\s*\?',
+                                body, re.IGNORECASE)
+    if (field.groups() != ('1', '1') or not complete_heading or not footer or len(options) != 4
+            or [o.group(2) for o in options] != ['1', '2', '3', '4']
+            or options[-1].end() >= footer.start()):
+        return result
+    labels = [('allow', 'run the tool and continue'),
+              ('allow for this session', 'run the tool and remember this choice for this session.'),
+              ('always allow', 'run the tool and remember this choice for future tool calls.'),
+              ('cancel', 'cancel this tool call')]
+    if any(normalize_visible_text(option.group(3)) not in (label, label + ' ' + description)
+           for option, (label, description) in zip(options, labels, strict=True)):
+        return result
+    selected = [o.group(2) for o in options if o.group(1)]
+    if selected != ['1']:
+        return result
+    # Preserve parameter case and string whitespace; UIA has no request IDs.
+    arguments = body[complete_heading.end():options[0].start()].strip('\r\n')
+    arguments = '\n'.join(row.rstrip() for row in arguments.splitlines()).strip('\r\n')
+    result.update(once=True, request_key='mcp-tool\n' + complete_heading.group(1) + '\n'
+                  + complete_heading.group(2) + '\n' + arguments)
+    return result
+
+
 def _selected_approval_option(text: str) -> str | None:
     """Distinguish a numbered menu selection from the identically marked composer.
 
     None means no numbered selection; an empty string means the selected row
     is not an authorized one-time option or lacks the rest of the menu.
     """
+    mcp = _mcp_tool_form(text)
+    if mcp is not None:
+        return "allow" if mcp["once"] else ""
     # Some UIA ranges concatenate adjacent options, including their shortcut
     # suffixes. Restore those boundaries before checking the selected row.
     lines = re.sub(
@@ -338,6 +403,9 @@ def codex_approval_prompt_visible(text: str) -> bool:
     The heading and option are required together because UIA's visible range
     can include stale transcript lines while an unrelated prompt is active.
     """
+    mcp = _mcp_tool_form(text)
+    if mcp is not None:
+        return mcp["once"]
     # Approval bodies can exceed the recovery status area's 40-row window.
     # UIA already supplied the visible viewport, so retain the full menu.
     lines = [normalize_visible_text(line) for line in _recovery_output_lines(text, status_area_only=False)]
@@ -444,6 +512,7 @@ class CodexTerminalReader:
         self._closed = False
         self._next_restart_at = 0.0
         self._helper_failures = 0
+        self._stale_snapshot_reported = False
         self._start_process()
 
     def _note_helper_failure(self, reason: str) -> None:
@@ -631,6 +700,7 @@ class CodexTerminalReader:
             return False
 
     def poll(self) -> list[dict] | None:
+        scan_sent_at = getattr(self, "_scan_sent_at", None)
         latest: str | None = None
         while True:
             try:
@@ -648,6 +718,19 @@ class CodexTerminalReader:
         else:
             self._helper_failures = 0
             self._next_restart_at = 0.0
+            # A queued response can outlive the error it describes while the
+            # monitor handles another window or a slow desktop probe. Measure
+            # from scan start, not dequeue time; stale reads must not send or
+            # clear a Working/ESC barrier. The next scan reuses this helper.
+            if parsed and (
+                scan_sent_at is None
+                or time.monotonic() - scan_sent_at > RECOVERY_SNAPSHOT_MAX_AGE_SECONDS
+            ):
+                if not getattr(self, "_stale_snapshot_reported", False):
+                    print("  UIA snapshot stale; waiting for a fresh scan", flush=True)
+                    self._stale_snapshot_reported = True
+                return None
+            self._stale_snapshot_reported = False
         return parsed
 
     def close(self) -> None:
@@ -665,6 +748,18 @@ class CodexTerminalReader:
         except (OSError, ValueError, AttributeError):
             pass
         self._stop_process(process)
+
+    def read_fresh(self) -> list[dict] | None:
+        """Request an independent pre-delivery scan, never reuse an old request."""
+        if self._scan_in_flight or not self.request_scan():
+            return None
+        deadline = time.monotonic() + RECOVERY_SNAPSHOT_MAX_AGE_SECONDS
+        while time.monotonic() < deadline:
+            snapshots = self.poll()
+            if snapshots is not None:
+                return snapshots
+            time.sleep(0.01)
+        return None
 
 
 def _recovery_line_has_context(line: str) -> bool:
@@ -744,6 +839,9 @@ def _terminal_footer_tail(lines: list[str]) -> bool:
 
 def _terminal_draft_visible(text: str) -> bool:
     """A nonempty composer belongs to the user, even while an error is visible."""
+    mcp = _mcp_tool_form(text)
+    if mcp is not None:
+        return not mcp["once"]
     lines = (text or "").splitlines()
     prompts = [i for i, line in enumerate(lines) if line.lstrip().startswith(TERMINAL_PROMPT_MARKERS)]
     if not prompts:
@@ -795,10 +893,155 @@ def _terminal_draft_visible(text: str) -> bool:
     return False
 
 
+def pick_recovery_text(viewport_text: str) -> str:
+    """Return the 'continue' command that matches the terminal's UI language.
+
+    An explicit CODEX_AUTO_CONFIRM_RECOVERY_TEXT always wins.  Otherwise a single
+    CJK glyph anywhere in the visible viewport is treated as evidence that the
+    Codex UI is localized to Chinese.
+    """
+    if CONFIGURED_RECOVERY_TEXT:
+        return CONFIGURED_RECOVERY_TEXT
+    for ch in viewport_text or "":
+        if "一" <= ch <= "鿿":
+            return RECOVERY_TEXT_ZH
+    return RECOVERY_TEXT_EN
+
+
+def _own_continue_draft_visible(text: str, tracker: ErrorRecoveryTracker) -> bool:
+    """Allow the monitor's just-posted Continue text during a retry window."""
+    if (
+        tracker.latched_signature not in CONTINUOUS_RECOVERY_SIGNATURES
+        or not tracker.semantic_retry_pending
+    ):
+        return False
+    last_delivery_at = tracker.last_delivery_at
+    if last_delivery_at is None:
+        return False
+    if time.monotonic() - last_delivery_at > max(5.0, tracker.semantic_retry_seconds + 2.0):
+        return False
+    prompts = [
+        line for line in (text or "").splitlines()
+        if line.lstrip().startswith(TERMINAL_PROMPT_MARKERS)
+    ]
+    if not prompts:
+        return False
+    return _submitted_continue_prompt(prompts[-1], tracker)
+
+
+def _recovery_input_readback_complete(text: str, tracker: ErrorRecoveryTracker) -> bool:
+    if _approval_prompt_cleared(text):
+        return True
+    if not _own_continue_draft_visible(text, tracker):
+        return False
+    lines = text.splitlines()
+    prompt = max(index for index, line in enumerate(lines)
+                 if line.lstrip().startswith(TERMINAL_PROMPT_MARKERS))
+    tail = lines[prompt + 1:]
+    return any(_terminal_footer_line(line) for line in tail) and _terminal_footer_tail(tail)
+
+
+def _recovery_cropped_retry_readback_usable(text: str, signature: str | None, tracker=None) -> bool:
+    """Accept a clipped post-submit viewport when no current input is present.
+
+    Windows Terminal can drop the composer/footer range once a long transcript
+    grows.  A continuous capacity/503 error plus a submitted Continue followed
+    by an output row is still enough to prove that the input is no longer a
+    user draft.  This deliberately excludes an active status, queue, approval,
+    and every non-continuous error; those paths retain their stricter guards.
+    """
+    if signature not in CONTINUOUS_RECOVERY_SIGNATURES:
+        return False
+    if _recovery_status_active(text) or _queued_submission_visible(text):
+        return False
+    if codex_approval_prompt_visible(text) or _terminal_draft_visible(text):
+        return False
+    lines = (text or "").splitlines()
+    prompts = [index for index, line in enumerate(lines)
+               if line and not line[0].isspace()
+               and line.startswith(TERMINAL_PROMPT_MARKERS)]
+    if not prompts:
+        return False
+    submitted = [index for index in prompts if _submitted_continue_prompt(lines[index], tracker)]
+    if not submitted:
+        return False
+    # The latest prompt must already have a top-level output row below it. A
+    # prompt with no following output is the user's current draft and is
+    # rejected by _terminal_draft_visible above; keeping this explicit makes
+    # the clipped-readback rule independent of footer visibility.
+    latest = submitted[-1]
+    return any(
+        line and not line[0].isspace()
+        and (line.startswith(("•", "◦", "■", "✔"))
+             or _terminal_footer_line(line))
+        for line in lines[latest + 1:]
+    )
+
+
+def _submitted_continue_prompt(line: str, tracker=None) -> bool:
+    content = normalize_terminal_text(line.lstrip()[1:])
+    content = re.sub(r"[\u2800-\u28ff]+$", "", content).rstrip("•◦").strip()
+    sent = getattr(tracker, "last_continue_text", None) or AUTO_CONTINUE_MESSAGE
+    accepted = {normalize_terminal_text(sent)}
+    if sent == AUTO_CONTINUE_MESSAGE:
+        accepted.add("继续")
+    return content in accepted
+
+
+def _recovery_continuation_checkpoint(text: str, tracker=None) -> tuple[str, bool] | None:
+    """Anchor a new failure to the same submitted continuation across two reads."""
+    if any(_status_candidate(line).startswith("worked for ")
+           for line in _recovery_output_lines(text)):
+        return ("terminal-complete", True)
+    lines = (text or "").splitlines()
+    prompts = [index for index, line in enumerate(lines)
+               if line and not line[0].isspace() and line.startswith(TERMINAL_PROMPT_MARKERS)]
+    if len(prompts) < 2:
+        return None
+    composer = prompts[-1]
+    content = re.sub(r"[\u2800-\u28ff]", "", normalize_terminal_text(lines[composer][1:])).strip()
+    tail = lines[composer + 1:]
+    if content not in ("", "ask codex to do anything") or not (
+        any(_terminal_footer_line(line) for line in tail) and _terminal_footer_tail(tail)
+    ):
+        return None
+    submitted = [index for index in prompts[:-1] if _submitted_continue_prompt(lines[index], tracker)]
+    if not submitted or _unmasked_recovery_error_signature(text) not in CONTINUOUS_RECOVERY_SIGNATURES:
+        return None
+    last_continue = submitted[-1]
+    prefix = [line.strip() for line in lines[:last_continue] if line.strip()]
+    if not prefix or _unmasked_recovery_error_signature("\n".join(lines[:last_continue])) not in CONTINUOUS_RECOVERY_SIGNATURES:
+        return None
+    anchor = json.dumps((len(submitted), prefix[-8:]), ensure_ascii=False)
+    after = _unmasked_recovery_error_signature("\n".join(lines[last_continue + 1:composer]))
+    return (anchor, after in CONTINUOUS_RECOVERY_SIGNATURES)
+
+
+def _recovery_continuation_checkpoints(
+    texts: list[str], *, working: bool = False, tracker=None
+) -> tuple[str, bool] | None:
+    """Merge evidence from original ranges without inventing a submitted input."""
+    evidence = [(text, checkpoint) for text in texts
+                if (checkpoint := _recovery_continuation_checkpoint(text, tracker)) is not None]
+    # A status-only range cannot borrow another range's submitted input to
+    # establish a Working checkpoint. Once established, already-visible
+    # errors in sibling ranges must still make the evidence sticky.
+    if working and not any(_recovery_state(text)[2] for text, _ in evidence):
+        return None
+    checkpoints = [checkpoint for _, checkpoint in evidence]
+    if not checkpoints:
+        return None
+    anchor = checkpoints[0][0]
+    if any(checkpoint[0] != anchor for checkpoint in checkpoints):
+        return ("ambiguous-working-episode", True)
+    return (anchor, any(checkpoint[1] for checkpoint in checkpoints))
+
+
 def _recovery_output_lines(text: str, *, status_area_only: bool = True) -> list[str]:
-    """Exclude input rows and their wrapped continuation rows from error evidence."""
+    """Exclude input and native tool output, establishing ownership before cropping."""
     output = []
     in_prompt = False
+    in_tool = False
     lines = (text or "").splitlines()
     start, end = _current_viewport_bounds(lines) if status_area_only else (0, len(lines))
     # Establish prompt ownership before cropping. A long submitted user
@@ -806,13 +1049,32 @@ def _recovery_output_lines(text: str, *, status_area_only: bool = True) -> list[
     for index, line in enumerate(lines[:end]):
         if line.lstrip().startswith(TERMINAL_PROMPT_MARKERS):
             in_prompt = True
+            in_tool = False
             continue
         if in_prompt and (not line.strip() or line[0].isspace()):
             continue
         in_prompt = False
+        if re.match(r"^[•◦]\s+(?:ran|running)\b", line, re.IGNORECASE):
+            in_tool = True
+            continue
+        if in_tool and (not line.strip() or line[0].isspace()):
+            continue
+        in_tool = False
         if index >= start:
             output.append(line)
     return output
+
+
+def _queued_submission_visible(text: str) -> bool:
+    """Recognize the native queued-message heading, excluding quoted/tool text."""
+    return any(
+        line and not line[0].isspace()
+        and re.match(
+            r"^(?:[•◦]\s*)?messages to be submitted after next tool call\b",
+            normalize_terminal_text(line),
+        )
+        for line in _recovery_output_lines(text, status_area_only=False)
+    )
 
 
 def _retry_progress(text: str) -> tuple[int, int] | None:
@@ -858,6 +1120,23 @@ def _working_status_line(line: str) -> bool:
     bridge = r"[\u25e6\u2022\u25aa\u25cf\u25c9\u25cb\u25a0\u2716\u00d7\u26a0\u274c\u2800-\u28ff\s]*"
     if re.match(rf"^working\s*{bridge}\(\s*\d+[^)]*\)", candidate):
         return True
+    worked_match = re.match(
+        r"^worked\s+for\s+\d+(?:\.\d+)?\s*"
+        r"(?:s|sec(?:ond)?s?|m|min(?:ute)?s?|h|hour?s?|d|day?s?|"
+        r"秒|分钟|小时)(?:\s+\d+(?:\.\d+)?\s*"
+        r"(?:s|sec(?:ond)?s?|m|min(?:ute)?s?|h|hour?s?|d|day?s?|秒|分钟|小时))*",
+        candidate,
+        re.IGNORECASE,
+    )
+    tail = candidate[worked_match.end():].strip() if worked_match else ""
+    decorative_tail = bool(tail) and all(char in "•◦\u2800-\u28ff" for char in tail)
+    tail_after_decoration = tail.lstrip("•◦\u2800-\u28ff ")
+    if worked_match and (
+        not tail
+        or decorative_tail
+        or tail_after_decoration.startswith(RECOVERY_ERROR_GLYPHS)
+    ):
+        return True
     return bool(
         re.match(
             r"^(?:compacting\s+context|\u6b63\u5728\u538b\u7f29\u4e0a\u4e0b\u6587)"
@@ -888,7 +1167,7 @@ def _working_status_active(text: str) -> bool:
         if not normalized:
             continue
         joined = " ".join(
-            normalize_terminal_text(part) for part in lines[index : index + 3]
+            normalize_terminal_text(part) for part in lines[index : index + 5]
         )
         is_status = _working_status_line(joined)
         stripped = raw_line.lstrip()
@@ -928,8 +1207,12 @@ def _working_status_active(text: str) -> bool:
         normalized = _status_candidate(raw_line)
         if not normalized:
             continue
+        # A completion row outside the current viewport belongs to history;
+        # only the current-pass scan above may use it as a terminal barrier.
+        if normalized.startswith("worked for "):
+            continue
         joined = " ".join(
-            normalize_terminal_text(part) for part in full_lines[index : index + 3]
+            normalize_terminal_text(part) for part in full_lines[index : index + 5]
         )
         is_status = _working_status_line(joined)
         stripped = raw_line.lstrip()
@@ -957,6 +1240,15 @@ def _unmasked_recovery_error_signature(text: str) -> str | None:
     for index, raw_line in enumerate(lines):
         line = normalize_terminal_text(raw_line)
         if not line or line.startswith(TERMINAL_PROMPT_MARKERS):
+            continue
+        # Only a top-level terminal error can start recovery. An indented
+        # fragment may be tool output whose heading is above the UIA viewport.
+        # Wrapped decode context is valid only after an established error.
+        if raw_line[0].isspace():
+            if stream_disconnect_pending:
+                if STREAM_DECODE_MARKER in line:
+                    latest_signature = "stream-disconnected"
+                stream_disconnect_pending = False
             continue
         # TextPattern can wrap the capacity sentence across adjacent lines.
         # Inspect a short forward window while preserving the normal
@@ -1175,46 +1467,6 @@ class IdleTracker:
         self.ready = False
 
 
-def pick_recovery_text(viewport_text: str) -> str:
-    """Return the 'continue' command that matches the terminal's UI language.
-
-    An explicit CODEX_AUTO_CONFIRM_RECOVERY_TEXT always wins.  Otherwise a single
-    CJK glyph anywhere in the visible viewport is treated as evidence that the
-    Codex UI is localized to Chinese.
-    """
-    if CONFIGURED_RECOVERY_TEXT:
-        return CONFIGURED_RECOVERY_TEXT
-    for ch in viewport_text or "":
-        if "一" <= ch <= "鿿":
-            return RECOVERY_TEXT_ZH
-    return RECOVERY_TEXT_EN
-
-
-def _auth_unavailable_pool_error(text: str) -> bool:
-    """Identify an account-pool 503 that should be retried until Working."""
-    lines = _recovery_output_lines(text)
-    status_503_indexes = [
-        index
-        for index, raw_line in enumerate(lines)
-        if re.search(r"(?<!\d)503(?!\d)", normalize_terminal_text(raw_line))
-        and _recovery_line_has_context(normalize_terminal_text(raw_line))
-    ]
-    if not status_503_indexes:
-        return False
-
-    error_start = status_503_indexes[-1]
-    error_end = len(lines)
-    for index in range(error_start + 1, len(lines)):
-        stripped = lines[index].lstrip()
-        if stripped.startswith(TERMINAL_PROMPT_MARKERS) or any(
-            stripped.startswith(glyph) for glyph in RECOVERY_ERROR_GLYPHS
-        ):
-            error_end = index
-            break
-    error_detail = normalize_terminal_text("\n".join(lines[error_start:error_end]))
-    return "auth_unavailable" in error_detail or "账号池没有可用账号" in error_detail
-
-
 class ErrorRecoveryTracker:
     def __init__(
         self,
@@ -1228,19 +1480,21 @@ class ErrorRecoveryTracker:
         self.retry_seconds = retry_seconds
         self.last_sent_at: float | None = None
         self.working_seen = False
+        self.last_continue_text: str | None = None
+        self.continuation_checkpoint: tuple[str, bool] | None = None
         self.delivery_retry_seconds = RECOVERY_DELIVERY_RETRY_SECONDS
         self.semantic_retry_seconds = RECOVERY_SEMANTIC_RETRY_SECONDS
-        self.auth_unavailable_retry_seconds = RECOVERY_AUTH_UNAVAILABLE_RETRY_SECONDS
         self.confirmation_timeout_seconds = RECOVERY_CONFIRMATION_TIMEOUT_SECONDS
         self.max_delivery_attempts = RECOVERY_MAX_ATTEMPTS
         self.delivery_attempts = 0
         self.delivery_pending = False
         self.semantic_retry_pending = False
-        self.retry_successful_delivery = False
         self.last_delivery_at: float | None = None
         self.cancellation_seen = False
         self.reconnecting_seen = False
         self.missing_snapshot_scans = 0
+        self.incomplete_readback_scans = 0
+        self.incomplete_readback_signature: str | None = None
 
     def observe(self, is_error: bool | None) -> bool:
         if is_error is None:
@@ -1265,16 +1519,12 @@ class ErrorRecoveryTracker:
         working_active: bool = False,
         cancellation_active: bool = False,
         now: float | None = None,
-        retry_successful_delivery: bool = False,
+        continuation_checkpoint: tuple[str, bool] | None = None,
     ) -> bool:
         if retry_progress is not None and not status_active:
             return False
 
         if status_active:
-            if (self.retry_successful_delivery and retry_progress is not None
-                    and not working_active and not cancellation_active):
-                # Reconnecting cannot bypass the account-pool retry interval.
-                return False
             self.delivery_pending = False
             self.semantic_retry_pending = False
             if retry_progress is not None and not working_active and not cancellation_active:
@@ -1293,6 +1543,7 @@ class ErrorRecoveryTracker:
                 # error line would re-arm as soon as the status disappears.
                 self.cancellation_seen = True
                 self.working_seen = False
+                self.continuation_checkpoint = None
                 self.reconnecting_seen = False
                 if self.latched_signature is None:
                     self.pending_signature = suppressed_signature
@@ -1305,8 +1556,7 @@ class ErrorRecoveryTracker:
                 if (
                     suppressed_signature is None
                     and (
-                        self.latched_signature == "model-capacity"
-                        or self.retry_successful_delivery
+                        self.latched_signature in CONTINUOUS_RECOVERY_SIGNATURES
                         or self.pending_signature is not None
                     )
                 ):
@@ -1321,6 +1571,14 @@ class ErrorRecoveryTracker:
                 # UIA can briefly drop the status row on the next scan; keep
                 # that barrier so the stale error cannot create a new send.
                 self.working_seen = True
+                if continuation_checkpoint is not None:
+                    previous = self.continuation_checkpoint
+                    if previous is None:
+                        self.continuation_checkpoint = continuation_checkpoint
+                    elif previous[0] != continuation_checkpoint[0]:
+                        self.continuation_checkpoint = ("ambiguous-working-episode", True)
+                    else:
+                        self.continuation_checkpoint = (previous[0], previous[1] or continuation_checkpoint[1])
                 self.reconnecting_seen = False
                 if self.latched_signature is None and suppressed_signature is not None:
                     self.pending_signature = suppressed_signature
@@ -1349,6 +1607,21 @@ class ErrorRecoveryTracker:
             self.semantic_retry_pending = False
             self.last_delivery_at = None
         if self.working_seen:
+            if (self.latched_signature in CONTINUOUS_RECOVERY_SIGNATURES
+                    and signature in CONTINUOUS_RECOVERY_SIGNATURES
+                    and (signature == self.latched_signature
+                         or self.continuation_checkpoint is not None)):
+                previous = self.continuation_checkpoint
+                if not (previous is not None and not previous[1]
+                        and continuation_checkpoint == (previous[0], True)
+                        and self.last_delivery_at is not None):
+                    return False
+                # The same submitted Continue now has a later terminal error.
+                # Resume paced retries without discarding the delivery time.
+                self.working_seen = False
+                self.semantic_retry_pending = True
+                self.continuation_checkpoint = None
+        if self.working_seen:
             # Working confirms the previously latched occurrence. Keep
             # suppressing that same stale line, but allow a genuinely new
             # signature to start a fresh recovery edge in the same terminal
@@ -1366,18 +1639,22 @@ class ErrorRecoveryTracker:
             self.delivery_pending = False
             self.semantic_retry_pending = False
             self.last_delivery_at = None
+        if (self.latched_signature in CONTINUOUS_RECOVERY_SIGNATURES
+                and signature in CONTINUOUS_RECOVERY_SIGNATURES):
+            # Capacity and account availability can alternate within one
+            # failed request. Preserve its pacing rather than latch forever
+            # or treat changed wording as permission for an immediate post.
+            self.latched_signature = signature
         if self.latched_signature == signature:
-            self.retry_successful_delivery |= retry_successful_delivery
             if self.delivery_pending:
-                if self.delivery_attempts >= self.max_delivery_attempts:
+                if (signature not in CONTINUOUS_RECOVERY_SIGNATURES
+                        and self.delivery_attempts >= self.max_delivery_attempts):
                     # A failed post is retried only a bounded number of
                     # times.  Keeping the latch without more sends prevents
                     # a broken input target from flooding the terminal.
                     return False
                 retry_seconds = self.delivery_retry_seconds
-            elif self.semantic_retry_pending and self.retry_successful_delivery:
-                retry_seconds = self.auth_unavailable_retry_seconds
-            elif self.semantic_retry_pending and signature == "model-capacity":
+            elif self.semantic_retry_pending and signature in CONTINUOUS_RECOVERY_SIGNATURES:
                 retry_seconds = self.semantic_retry_seconds
             else:
                 return False
@@ -1400,7 +1677,6 @@ class ErrorRecoveryTracker:
             # automatic Continue message.
             return False
 
-        self.retry_successful_delivery = retry_successful_delivery
         self.latched_signature = signature
         self.pending_signature = None
         self.was_error = True
@@ -1415,9 +1691,12 @@ class ErrorRecoveryTracker:
         return True
 
     def record_delivery(self, delivered: bool, now: float | None = None) -> None:
+        self.continuation_checkpoint = None
+        self.incomplete_readback_scans = 0
+        self.incomplete_readback_signature = None
         now = self.last_sent_at if now is None and self.last_sent_at is not None else now
         now = time.monotonic() if now is None else now
-        if delivered and (self.latched_signature == "model-capacity" or self.retry_successful_delivery):
+        if delivered and self.latched_signature in CONTINUOUS_RECOVERY_SIGNATURES:
             # The delivery budget counts consecutive failed posts. Successful
             # but unacknowledged capacity activations use the paced interval.
             self.delivery_attempts = 0
@@ -1426,27 +1705,34 @@ class ErrorRecoveryTracker:
         self.last_delivery_at = now
         self.last_sent_at = now
         self.delivery_pending = not delivered
-        # Posting input is not proof that Codex resumed.  Only the two live
-        # processing statuses stop capacity retries.  Every retry still needs
-        # a fresh error snapshot and passes the draft/physical-input guards.
-        self.semantic_retry_pending = delivered and (
-            self.latched_signature == "model-capacity" or self.retry_successful_delivery
-        )
+        # Posting input is not proof that Codex resumed. Every retry still
+        # needs fresh error evidence and passes the draft/activity guards.
+        self.semantic_retry_pending = delivered and self.latched_signature in CONTINUOUS_RECOVERY_SIGNATURES
 
     def reset(self) -> None:
+        self.last_continue_text = None
         self.was_error = False
         self.latched_signature = None
         self.pending_signature = None
         self.last_sent_at = None
         self.working_seen = False
+        self.continuation_checkpoint = None
         self.delivery_attempts = 0
         self.delivery_pending = False
         self.semantic_retry_pending = False
-        self.retry_successful_delivery = False
         self.last_delivery_at = None
         self.cancellation_seen = False
         self.reconnecting_seen = False
         self.missing_snapshot_scans = 0
+        self.incomplete_readback_scans = 0
+        self.incomplete_readback_signature = None
+
+    def note_incomplete_readback(self, signature: str) -> int:
+        if signature != self.incomplete_readback_signature:
+            self.incomplete_readback_signature = signature
+            self.incomplete_readback_scans = 0
+        self.incomplete_readback_scans += 1
+        return self.incomplete_readback_scans
 
 class ActionRequiredTracker:
     def __init__(self, retry_seconds: float | None = RETRY_ENTER_SECONDS) -> None:
@@ -1483,6 +1769,9 @@ class ActionRequiredTracker:
 
 def _approval_request_key(text: str) -> str | None:
     """Identify request content, excluding earlier transcript and menu redraws."""
+    mcp = _mcp_tool_form(text)
+    if mcp is not None:
+        return mcp["request_key"]
     lines = (text or "").splitlines()
     headings = [
         index for index, line in enumerate(lines)
@@ -1526,8 +1815,45 @@ def _approval_request_key(text: str) -> str | None:
     return heading + "\n" + "\n".join(line[padding:] for line in body)
 
 
+def _approval_command_scope(text: str) -> str | None:
+    """Identify a clipped menu only from its complete, unselected scope option."""
+    if not _selected_approval_option(text):
+        return None
+    lines = (text or "").splitlines()
+    selected = max((index for index, line in enumerate(lines)
+                    if re.match(r"^[›»>]\s*\d+[.)]\s+", normalize_visible_text(line))), default=-1)
+    if selected < 0:
+        return None
+    footer = next((index for index in range(selected + 1, len(lines))
+                   if ACTION_REQUIRED_CONFIRMATION_FOOTER in normalize_visible_text(lines[index])), None)
+    if footer is None:
+        return None
+    lines = lines[selected + 1:footer + 1]
+    prefix = r"^\s*\d+[.)]\s+yes, and don't ask again for commands that start with\s*"
+    for index, line in enumerate(lines):
+        if not re.match(prefix, line, re.IGNORECASE):
+            continue
+        end = next((row for row in range(index + 1, len(lines))
+                    if re.match(r"^\s*(?:[›»>]\s*)?\d+[.)]\s+(?:yes|no)\b",
+                                lines[row], re.IGNORECASE)
+                    or ACTION_REQUIRED_CONFIRMATION_FOOTER in normalize_visible_text(lines[row])),
+                   len(lines))
+        if not any(ACTION_REQUIRED_CONFIRMATION_FOOTER in normalize_visible_text(row)
+                   for row in lines[end:]):
+            return None
+        option = "\n".join(lines[index:end]).strip()
+        match = re.fullmatch(prefix + r"`(.+)`\s*", option, re.IGNORECASE | re.DOTALL)
+        if match:
+            # Whitespace-insensitive matching is conservative deduplication:
+            # soft wrapping must not create a new request. Keep command case.
+            return re.sub(r"\s+", "", match.group(1)) or None
+    return None
+
+
 def _approval_prompt_cleared(text: str) -> bool:
     """Require a later processing status or an empty composer, not missing UIA."""
+    if _mcp_tool_form(text) is not None:
+        return False
     lines = (text or "").splitlines()
     for index in range(len(lines) - 1, -1, -1):
         line = normalize_terminal_text(lines[index])
@@ -1547,6 +1873,7 @@ def _approval_prompt_cleared(text: str) -> bool:
             any(line == heading or line.startswith(heading + " ") for heading in APPROVAL_HEADINGS)
             or re.match(r"^(?:[›»>]\s*)?\d+[.)]\s+(?:yes|no)\b", line)
             or ACTION_REQUIRED_CONFIRMATION_FOOTER in line
+            or re.fullmatch(r"enter to submit\s+esc to cancel", line)
         ):
             last_menu_row = index
     return _working_status_active("\n".join(lines[last_menu_row + 1:]))
@@ -1578,9 +1905,35 @@ class ApprovalPromptTracker:
         self.last_confirmation_at: float | None = None
         self.request_key: str | None = None
         self.request_states: dict[str, tuple] = {}
+        self.scope_requests: dict[str, set[str]] = {}
+
+    def _resolve_scope(self, request_key: str | None, scope: str) -> str | None:
+        if scope not in self.scope_requests and len(self.scope_requests) >= 128:
+            return request_key
+        known = self.scope_requests.setdefault(scope, set())
+        scope_key = "command-scope\n" + scope
+        if request_key is None:
+            # A previous full read may have omitted the permanent option.
+            # Reuse any matching command identity rather than invent an edge.
+            marker = "would you like to run the following command?\n$ "
+            known.update(key for key in self.request_states
+                         if key.startswith(marker)
+                         and re.sub(r"\s+", "", key[len(marker):]).startswith(scope))
+            if len(known) > 1:
+                return None
+            return next(iter(known)) if known else scope_key
+        if not known and scope_key in self.request_states:
+            # The first complete body upgrades the clipped identity. Preserve
+            # its delivery budget and readback state instead of sending again.
+            self.request_states[request_key] = self.request_states.pop(scope_key)
+            if self.request_key == scope_key:
+                self.request_key = request_key
+        if len(known) < 128:
+            known.add(request_key)
+        return request_key
 
     def observe(self, is_visible: bool | None, now: float | None = None,
-                *, request_key: str | None = None) -> bool:
+                *, request_key: str | None = None, request_scope: str | None = None) -> bool:
         if is_visible is None:
             self.pause_confirmation()
             return False
@@ -1588,6 +1941,22 @@ class ApprovalPromptTracker:
         if not is_visible:
             self.reset()
             return False
+
+        if request_scope is None and request_key is not None and request_key not in self.request_states:
+            marker = "would you like to run the following command?\n$ "
+            command = re.sub(r"\s+", "", request_key[len(marker):]) if request_key.startswith(marker) else ""
+            candidates = [scope for scope in self.scope_requests
+                          if "command-scope\n" + scope in self.request_states
+                          and command.startswith(scope)]
+            if len(candidates) > 1:
+                self.pause_confirmation()
+                return False
+            request_scope = next(iter(candidates), None)
+        if request_scope is not None:
+            request_key = self._resolve_scope(request_key, request_scope)
+            if request_key is None:
+                self.pause_confirmation()
+                return False
 
         if request_key is not None and request_key != self.request_key:
             if self.visible and self.request_key is None:
@@ -1674,6 +2043,7 @@ class ApprovalPromptTracker:
         self.pause_confirmation()
         self.request_key = None
         self.request_states.clear()
+        self.scope_requests.clear()
 
 
 def window_title(hwnd: int) -> str:
@@ -1907,11 +2277,11 @@ def _post_messages_via_attached_target(
 
 
 def send_enter_via_attached_post(hwnd: int | None) -> bool | None:
+    # Terminal translates key-down into CR. Posting WM_CHAR too duplicates Enter.
     return _post_messages_via_attached_target(
         hwnd,
         (
             (WM_KEYDOWN, VK_RETURN, ENTER_KEY_LPARAM),
-            (WM_CHAR, VK_RETURN, ENTER_KEY_LPARAM),
             (WM_KEYUP, VK_RETURN, ENTER_KEYUP_LPARAM),
         ),
     )
@@ -1937,7 +2307,6 @@ def send_continue(hwnd: int | None, text: str | None = None) -> bool:
         tuple((WM_CHAR, ord(character), 0) for character in text)
         + (
             (WM_KEYDOWN, VK_RETURN, ENTER_KEY_LPARAM),
-            (WM_CHAR, VK_RETURN, ENTER_KEY_LPARAM),
             (WM_KEYUP, VK_RETURN, ENTER_KEYUP_LPARAM),
         ),
     ))
@@ -1968,6 +2337,9 @@ def process_codex_recovery_snapshots(
     snapshots: list[dict] | None,
     tracker: ErrorRecoveryTracker,
     sender=send_continue,
+    *,
+    readback=None,
+    checkpoint_texts: list[str] | None = None,
 ) -> tuple[bool, str | None, bool | None]:
     if snapshots is None:
         tracker.observe(None)
@@ -1993,7 +2365,7 @@ def process_codex_recovery_snapshots(
     ):
         return False, None, None
 
-    match: tuple[str, int, str] | None = None
+    match: tuple[str, int] | None = None
     suppressed_signature: str | None = None
     status_active = False
     working_active = False
@@ -2021,10 +2393,21 @@ def process_codex_recovery_snapshots(
         except (TypeError, ValueError):
             continue
         if hwnd > 0:
-            match = (signature, hwnd, text)
-            break
+            if match is None:
+                match = (signature, hwnd)
+            # Read every sibling: a later status range takes priority over
+            # the earlier error regardless of provider enumeration order.
 
+    queued_active = any(_queued_submission_visible(str(snapshot.get("text", "")))
+                        for snapshot in snapshots if isinstance(snapshot, dict))
     if status_active:
+        if queued_active:
+            if not working_active and not cancellation_active:
+                return False, None, None
+            # Working plus a pending message is not proof of a cleared error
+            # episode. Keep the old signature while establishing the barrier.
+            suppressed_signature = (suppressed_signature or tracker.latched_signature
+                                    or tracker.pending_signature)
         tracker.observe_error(
             None,
             status_active=True,
@@ -2032,43 +2415,164 @@ def process_codex_recovery_snapshots(
             working_active=working_active,
             cancellation_active=cancellation_active,
             retry_progress=retry_progress,
+            continuation_checkpoint=_recovery_continuation_checkpoints([
+                str(snapshot.get("text", "")) for snapshot in snapshots
+                if eligible_codex_snapshot(snapshot)
+            ], working=True, tracker=tracker),
         )
+        return False, None, None
+
+    if queued_active:
+        # A queued continuation already awaits the running tool. Its heading
+        # alone is not a clean composer and must not reset the Working latch.
         return False, None, None
 
     if any(
         _terminal_draft_visible(str(snapshot.get("text", "")))
+        and not _own_continue_draft_visible(str(snapshot.get("text", "")), tracker)
         for snapshot in snapshots
         if isinstance(snapshot, dict)
     ):
         return False, None, None
 
     if match is None:
-        tracker.observe_no_error()
+        # A partial viewport containing only tool output is not a completed
+        # turn. Reuse the authoritative empty-composer/footer readback before
+        # clearing a Working barrier; missing status rows must preserve it.
+        if any(
+            _approval_prompt_cleared(str(snapshot.get("text", "")))
+            for snapshot in snapshots if isinstance(snapshot, dict)
+        ):
+            tracker.observe_no_error()
         return False, None, None
 
-    signature, hwnd, viewport_text = match
+    signature, hwnd = match
+    continuation_checkpoint = _recovery_continuation_checkpoints(
+        checkpoint_texts if checkpoint_texts is not None else [
+            str(snapshot.get("text", "")) for snapshot in snapshots
+            if eligible_codex_snapshot(snapshot)
+        ], tracker=tracker
+    )
     if recovery_input_busy(hwnd):
         return False, signature, None
-    if not tracker.observe_error(
-        signature,
-        retry_successful_delivery=(
-            signature == "http-503" and _auth_unavailable_pool_error(viewport_text)
-        ),
-    ):
+    if readback is not None:
+        # Preview eligibility without latching an error or spending a delivery
+        # attempt. Unknown/partial preflight reads leave the real tracker intact.
+        if not copy.copy(tracker).observe_error(
+            signature, continuation_checkpoint=continuation_checkpoint
+        ):
+            return False, signature, None
+        try:
+            fresh = readback()
+        except Exception:
+            fresh = None
+        target = []
+        for snapshot in fresh or []:
+            if not isinstance(snapshot, dict):
+                continue
+            try:
+                same_window = int(snapshot.get("hwnd", 0)) == hwnd
+            except (TypeError, ValueError):
+                same_window = False
+            if same_window and snapshot.get("class") == "CASCADIA_HOSTING_WINDOW_CLASS":
+                target.append(snapshot)
+        record_recovery_decision(hwnd, signature, "preflight", snapshots, target)
+        if not target:
+            return False, signature, None
+        texts = [str(snapshot.get("text", "")) for snapshot in target]
+        blocked = (
+            any(snapshot.get("input_ambiguous") for snapshot in target)
+            or any(_recovery_state(text)[1] or _queued_submission_visible(text)
+                   or codex_approval_prompt_visible(text)
+                   or (_terminal_draft_visible(text) and not _own_continue_draft_visible(text, tracker))
+                   for text in texts)
+        )
+        complete = any(_recovery_input_readback_complete(text, tracker) for text in texts)
+        cropped_complete = any(
+            _recovery_cropped_retry_readback_usable(text, signature, tracker) for text in texts
+        )
+        if not blocked and not complete and not cropped_complete:
+            # A persistent continuous error can outlive the composer/footer
+            # ranges entirely. Do not stop forever on a single partial read,
+            # but after two identical incomplete fresh reads the original
+            # error snapshot is the only remaining actionable evidence.
+            cropped_complete = (
+                signature in CONTINUOUS_RECOVERY_SIGNATURES
+                and tracker.note_incomplete_readback(signature)
+                >= RECOVERY_INCOMPLETE_RETRY_SCANS
+            )
+        if not blocked and not complete and not cropped_complete:
+            record_recovery_decision(hwnd, signature, "incomplete", snapshots, target)
+            return False, signature, None
+
+        recovery_text = pick_recovery_text("\n".join(texts))
+
+        def guarded_sender(target_hwnd):
+            record_recovery_decision(hwnd, signature, "authorized", snapshots, target)
+            try:
+                delivered = bool(sender(target_hwnd, recovery_text)
+                                 if sender is send_continue else sender(target_hwnd))
+                if delivered and sender is send_continue:
+                    tracker.last_continue_text = recovery_text
+            except Exception:
+                delivered = False
+            record_recovery_decision(hwnd, signature, "posted" if delivered else "post-failed",
+                                     snapshots, target)
+            return delivered
+
+        events = process_codex_recovery_snapshots_multi(target, {hwnd: tracker}, guarded_sender)
+        if not events:
+            record_recovery_decision(hwnd, signature, "blocked", snapshots, target)
+            return False, signature, None
+        _, fresh_signature, delivered = events[0]
+        return True, fresh_signature, delivered
+    if not tracker.observe_error(signature, continuation_checkpoint=continuation_checkpoint):
         return False, signature, None
     try:
-        delivered = bool(sender(hwnd, pick_recovery_text(viewport_text))
-                         if sender is send_continue else sender(hwnd))
+        recovery_text = pick_recovery_text("\n".join(
+            str(snapshot.get("text", "")) for snapshot in snapshots))
+        delivered = bool(sender(hwnd, recovery_text) if sender is send_continue else sender(hwnd))
+        if delivered and sender is send_continue:
+            tracker.last_continue_text = recovery_text
     except Exception:
         delivered = False
     tracker.record_delivery(delivered)
     return True, signature, delivered
 
 
+def _runtime_log_dir() -> str:
+    """Keep frozen diagnostics outside PyInstaller's temporary extraction tree."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "codex-auto-confirm")
+    return os.path.join(os.path.dirname(__file__), "run_logs")
+
+
+def record_recovery_decision(hwnd, signature, decision, initial, fresh) -> None:
+    """Keep bounded, local evidence before posting input and its delivery result."""
+    path = os.path.join(_runtime_log_dir(), "codex-recovery-decisions.jsonl")
+    def evidence(snapshots):
+        return [{"text": str(snapshot.get("text", ""))[-16000:],
+                 "input_ambiguous": bool(snapshot.get("input_ambiguous"))}
+                for snapshot in snapshots]
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path) and os.path.getsize(path) >= 2 * 1024 * 1024:
+            os.replace(path, path + ".1")
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"time_ns": time.time_ns(), "hwnd": hwnd,
+                                     "signature": signature, "decision": decision,
+                                     "initial": evidence(initial), "fresh": evidence(fresh)},
+                                    ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def process_codex_recovery_snapshots_multi(
     snapshots: list[dict] | None,
     trackers: dict[int, ErrorRecoveryTracker],
     sender=send_continue,
+    *,
+    readback=None,
 ) -> list[tuple[int, str, bool]]:
     """Process each eligible terminal independently.
 
@@ -2179,6 +2683,8 @@ def process_codex_recovery_snapshots_multi(
             for snapshot in window_snapshots
         )
         status_active = any(state[1] for state in snapshot_states)
+        queued_active = any(_queued_submission_visible(str(snapshot.get("text", "")))
+                            for snapshot in window_snapshots)
         if status_active:
             retry_progress = next(
                 (
@@ -2200,6 +2706,11 @@ def process_codex_recovery_snapshots_multi(
                 None,
             )
             working_active = any(state[2] for state in snapshot_states)
+            if queued_active:
+                if not working_active and not cancellation_active:
+                    continue
+                suppressed_signature = (suppressed_signature or tracker.latched_signature
+                                        or tracker.pending_signature)
             tracker.observe_error(
                 None,
                 status_active=True,
@@ -2207,7 +2718,14 @@ def process_codex_recovery_snapshots_multi(
                 working_active=working_active,
                 cancellation_active=cancellation_active,
                 retry_progress=retry_progress,
+                continuation_checkpoint=_recovery_continuation_checkpoints([
+                    str(snapshot.get("text", ""))
+                    for snapshot in window_snapshots
+                ], working=True, tracker=tracker),
             )
+            continue
+
+        if queued_active:
             continue
 
         # Check every sibling before merging: another pane's long transcript
@@ -2215,16 +2733,137 @@ def process_codex_recovery_snapshots_multi(
         # and the delivery budget so clearing the draft can resume recovery.
         if any(
             _terminal_draft_visible(str(snapshot.get("text", "")))
+            and not _own_continue_draft_visible(str(snapshot.get("text", "")), tracker)
             for snapshot in window_snapshots
         ):
             continue
 
         triggered, signature, delivered = process_codex_recovery_snapshots(
-            [candidate], tracker, sender
+            [candidate], tracker, sender, readback=readback,
+            checkpoint_texts=[str(snapshot.get("text", "")) for snapshot in window_snapshots],
         )
         if triggered and signature is not None:
             events.append((hwnd, signature, bool(delivered)))
     return events
+
+
+def record_approval_health(payload: dict) -> None:
+    """Atomically publish current health; never turn diagnostics into input policy."""
+    path = os.path.join(_runtime_log_dir(), "codex-auto-confirm-health.json")
+    temporary = path + f".{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        os.replace(temporary, path)
+    except OSError as exc:
+        print(f"  Approval health write failed: {exc}", flush=True)
+
+
+class ApprovalHealthMonitor:
+    """Report stalled approvals and refresh only their reader, preserving input budgets."""
+
+    def __init__(self) -> None:
+        self.windows: dict[int, dict] = {}
+        self.last_written_at = -float("inf")
+        self.next_refresh_at = 0.0
+        self.last_states: dict[int, tuple] = {}
+
+    def pause(self) -> None:
+        if self.windows:
+            self.windows.clear()
+            self.last_states.clear()
+            record_approval_health({"time_ns": time.time_ns(), "enabled": False, "windows": {}})
+
+    def update(self, snapshots, trackers, reader, *, now=None) -> None:
+        now = time.monotonic() if now is None else now
+        grouped: dict[int, list[dict]] = {}
+        for item in snapshots or []:
+            if not isinstance(item, dict) or item.get("class") != "CASCADIA_HOSTING_WINDOW_CLASS":
+                continue
+            try:
+                hwnd = int(item.get("hwnd", 0))
+            except (TypeError, ValueError):
+                continue
+            if hwnd > 0 and "codex_auto_confirm" not in str(item.get("title", "")).casefold():
+                grouped.setdefault(hwnd, []).append(item)
+        for hwnd, items in grouped.items():
+            texts = [str(item.get("text", "")) for item in items]
+            menu = any(codex_approval_prompt_visible(text) or (
+                action_required_title_matches(str(item.get("title", ""))) and action_required_options_visible(text)
+            ) for item, text in zip(items, texts, strict=True))
+            requested = menu or any(action_required_title_matches(str(item.get("title", ""))) for item in items)
+            if hwnd not in self.windows and (not requested or len(self.windows) >= 64):
+                continue
+            state = self.windows.setdefault(hwnd, {"pending_since": None, "reader_refreshes": 0})
+            tracker = trackers.get(hwnd)
+            state.update(last_fresh_at=now, input_attempts=tracker.delivery_attempts if tracker else 0,
+                         input_limit=tracker.max_delivery_attempts if tracker else 3)
+            key = tracker.request_key if tracker else None
+            state["request_digest"] = hashlib.sha256(key.encode()).hexdigest()[:16] if key else None
+            repair = next((item.get("viewport_repair") for item in items if isinstance(item.get("viewport_repair"), dict)), {})
+            state["viewport_attempts"] = int(repair.get("attempts", 0))
+            ambiguous = any(item.get("input_ambiguous") for item in items)
+            draft = any(_terminal_draft_visible(text) for text in texts)
+            if not ambiguous and not draft and not menu and any(_approval_prompt_cleared(text) for text in texts):
+                state.update(pending_since=None, reader_refreshes=0, reason="processing_or_idle", state="clear")
+                continue
+            if state["pending_since"] is None:
+                if not requested:
+                    continue
+                state["pending_since"] = now
+            reason = "awaiting_readback" if menu else "menu_unreadable"
+            if ambiguous:
+                reason = "input_ambiguous"
+            elif draft:
+                reason = "user_draft"
+            elif menu and state["input_attempts"] >= state["input_limit"]:
+                reason = "input_budget_exhausted"
+            elif not menu and repair.get("reason") not in (None, "not_requested", "visible_menu"):
+                reason = str(repair["reason"])
+            state["reason"] = reason
+        changed = False
+        for hwnd, state in list(self.windows.items()):
+            if not recovery_window_is_alive(hwnd):
+                self.windows.pop(hwnd)
+                self.last_states.pop(hwnd, None)
+                changed = True
+                continue
+            pending_since = state["pending_since"]
+            if pending_since is not None:
+                if now - state["last_fresh_at"] >= 5.0:
+                    state["reason"] = "uia_unavailable"
+                state["state"] = "stalled" if now - pending_since >= 10.0 else "pending"
+                refreshable = state["reason"] in (
+                    "menu_unreadable", "uia_unavailable", "viewport_exhausted", "viewport_provider_error",
+                    "viewport_navigation_failed", "input_budget_exhausted", "tail_selected_out_of_bound",
+                    "at_buffer_end_no_menu", "visible_range_missing", "tail_no_current_menu",
+                )
+                if (refreshable and now - pending_since >= 8.0 and now >= self.next_refresh_at
+                        and state["reader_refreshes"] < 2):
+                    state["reader_refreshes"] += 1
+                    self.next_refresh_at = now + 30.0
+                    try:
+                        state["last_refresh_ok"] = bool(reader.restart(force=True))
+                    except Exception:
+                        state["last_refresh_ok"] = False
+            signature = (state["reason"], state["state"], state["input_attempts"],
+                         state["viewport_attempts"], state["reader_refreshes"])
+            if self.last_states.get(hwnd) != signature:
+                changed = True
+                self.last_states[hwnd] = signature
+                items = grouped.get(hwnd, [])
+                record_recovery_decision(hwnd, "approval:" + str(state["request_digest"]),
+                                         "approval-" + state["reason"], items, items)
+                if state["state"] == "stalled":
+                    print(f"  Approval stalled hwnd={hwnd} reason={state['reason']} "
+                          f"input={state['input_attempts']}/{state['input_limit']} "
+                          f"viewport={state['viewport_attempts']}/3 reader_refreshes={state['reader_refreshes']}",
+                          flush=True)
+        if changed or now - self.last_written_at >= 2.0:
+            self.last_written_at = now
+            record_approval_health({"time_ns": time.time_ns(), "enabled": True,
+                                    "windows": copy.deepcopy(self.windows)})
 
 
 def process_codex_approval_snapshots_multi(
@@ -2288,7 +2927,9 @@ def process_codex_approval_snapshots_multi(
             continue
         keys = {_approval_request_key(str(item.get("text", ""))) for item in menus}
         keys.discard(None)
-        if len(keys) > 1:
+        scopes = {_approval_command_scope(str(item.get("text", ""))) for item in menus}
+        scopes.discard(None)
+        if len(keys) > 1 or len(scopes) > 1:
             tracker.pause_confirmation()
             continue
         observed = True if visible else (
@@ -2297,7 +2938,8 @@ def process_codex_approval_snapshots_multi(
                 for item in window_snapshots
             ) else None
         )
-        if not tracker.observe(observed, request_key=next(iter(keys), None)):
+        if not tracker.observe(observed, request_key=next(iter(keys), None),
+                               request_scope=next(iter(scopes), None)):
             continue
         try:
             delivered = bool(sender(hwnd))
@@ -2318,23 +2960,32 @@ def send_enter(hwnd: int | None) -> bool:
 
     # Keep a message fallback for classic Win32 consoles and older hosts.
     try:
-        target_hwnd = find_input_target(hwnd)
+        target_hwnd = (find_inputsite_target(hwnd)
+                       if window_class(hwnd) == "CASCADIA_HOSTING_WINDOW_CLASS"
+                       else find_input_target(hwnd))
         if not target_hwnd:
             return False
-        messages = (
-            (WM_KEYDOWN, ENTER_KEY_LPARAM),
-            (WM_CHAR, ENTER_KEY_LPARAM),
-            (WM_KEYUP, ENTER_KEYUP_LPARAM),
-        )
-        return all(
-            user32.PostMessageW(target_hwnd, message, VK_RETURN, lparam)
-            for message, lparam in messages
-        )
+        pressed = False
+        try:
+            if not user32.PostMessageW(target_hwnd, WM_KEYDOWN, VK_RETURN, ENTER_KEY_LPARAM):
+                return False
+            pressed = True
+            if not user32.PostMessageW(target_hwnd, WM_KEYUP, VK_RETURN, ENTER_KEYUP_LPARAM):
+                return False
+            pressed = False
+            return True
+        finally:
+            if pressed:
+                try:
+                    user32.PostMessageW(target_hwnd, WM_KEYUP, VK_RETURN, ENTER_KEYUP_LPARAM)
+                except Exception:
+                    pass
     except Exception:
         return False
 
 def auto_enter_loop() -> None:
     approval_trackers: dict[int, ApprovalPromptTracker] = {}
+    approval_health = ApprovalHealthMonitor()
     desktop_tracker = DesktopApprovalTracker()
     recovery_trackers: dict[int, ErrorRecoveryTracker] = {}
     terminal_reader = CodexTerminalReader()
@@ -2347,6 +2998,7 @@ def auto_enter_loop() -> None:
     try:
         while running:
             if not auto_confirm:
+                approval_health.pause()
                 desktop_tracker.observe(False)
                 for recovery_tracker in recovery_trackers.values():
                     recovery_tracker.reset()
@@ -2403,6 +3055,7 @@ def auto_enter_loop() -> None:
                 recovery_events = process_codex_recovery_snapshots_multi(
                     terminal_snapshots,
                     recovery_trackers,
+                    readback=getattr(terminal_reader, "read_fresh", lambda: None),
                 )
             except Exception as exc:
                 print(
@@ -2420,14 +3073,6 @@ def auto_enter_loop() -> None:
                     f"[send_continue={result}]"
                 )
                 last_state = "sent" if recovery_delivered else "send_failed"
-                time.sleep(
-                    min(
-                        LOOP_SECONDS,
-                        RECOVERY_SEMANTIC_RETRY_SECONDS
-                        if recovery_delivered
-                        else RECOVERY_DELIVERY_RETRY_SECONDS,
-                    )
-                )
 
             try:
                 approval_events = process_codex_approval_snapshots_multi(
@@ -2451,7 +3096,11 @@ def auto_enter_loop() -> None:
                     flush=True,
                 )
                 last_state = "sent" if approval_delivered else "send_failed"
-                time.sleep(AFTER_ENTER_SLEEP_SECONDS)
+
+            try:
+                approval_health.update(terminal_snapshots, approval_trackers, terminal_reader)
+            except Exception as exc:
+                print(f"  Approval health error: {type(exc).__name__}: {exc}", flush=True)
 
             try:
                 hwnd, _title = find_action_required_window()
@@ -2468,9 +3117,21 @@ def auto_enter_loop() -> None:
             # title sender could submit drafts or duplicate the same approval.
 
             desktop_probe_fresh = False
+            desktop_hwnd = None
             if time.monotonic() >= next_desktop_probe:
                 try:
-                    desktop_visible = read_desktop_allow_once()
+                    desktop_hwnd = find_codex_desktop_window()
+                except Exception as exc:
+                    print(
+                        f"  Monitor iteration error (desktop target): "
+                        f"{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                try:
+                    # A desktop target is already required for delivery. Check
+                    # it before network I/O so an absent desktop cannot stall
+                    # terminal scans on repeated CDP connection timeouts.
+                    desktop_visible = bool(desktop_hwnd) and read_desktop_allow_once()
                 except Exception as exc:
                     print(
                         f"  Monitor iteration error (desktop detector): "
@@ -2480,15 +3141,6 @@ def auto_enter_loop() -> None:
                     desktop_visible = False
                 next_desktop_probe = time.monotonic() + DESKTOP_POLL_SECONDS
                 desktop_probe_fresh = True
-            try:
-                desktop_hwnd = find_codex_desktop_window() if desktop_probe_fresh and desktop_visible else None
-            except Exception as exc:
-                print(
-                    f"  Monitor iteration error (desktop target): "
-                    f"{type(exc).__name__}: {exc}",
-                    flush=True,
-                )
-                desktop_hwnd = None
             if desktop_probe_fresh and desktop_tracker.observe(desktop_visible) and desktop_hwnd:
                 enter_attempts += 1
                 delivered = send_enter(desktop_hwnd)
@@ -2496,7 +3148,6 @@ def auto_enter_loop() -> None:
                 result = "ok" if delivered else "failed"
                 print(f'  Desktop allow-once detected -> Enter attempt {enter_attempts} [send_enter={result}]')
                 last_state = 'sent' if delivered else 'send_failed'
-                time.sleep(AFTER_ENTER_SLEEP_SECONDS)
             elif desktop_visible:
                 last_state = 'holding'
 

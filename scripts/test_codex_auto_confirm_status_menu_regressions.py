@@ -140,7 +140,7 @@ class StatusAndMenuRegressionTests(unittest.TestCase):
 
     def test_authoritative_clear_rearms_the_same_command(self):
         for clear in ("◦ Working (2s • esc to interrupt)",
-                      "› Ask Codex to do anything\n  gpt-6.1-sol xhigh · E:\\AXIO-V2 · Main [default]"):
+                      "› Ask Codex to do anything\n  gpt-6.1-sol xhigh · E:\\example-project · Main [default]"):
             with self.subTest(clear=clear):
                 module = load_module()
                 sender = Mock(return_value=True)

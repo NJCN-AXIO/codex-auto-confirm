@@ -480,12 +480,109 @@ class AutoConfirmGuardTests(unittest.TestCase):
         with (
             patch.object(module, "CodexTerminalReader", return_value=FakeReader()),
             patch.object(module, "find_action_required_window", return_value=(None, "")),
+            patch.object(module, "find_codex_desktop_window", return_value=1234),
             patch.object(module, "read_desktop_allow_once", desktop_probe),
             patch.object(module.time, "sleep", side_effect=stop_after_three),
         ):
             module.auto_enter_loop()
 
         self.assertEqual(desktop_probe.call_count, 1)
+
+    def test_absent_desktop_does_not_delay_new_terminal_approval(self):
+        module = load_module()
+        module.running = module.auto_confirm = True
+        clock = [0.0]
+        sent_at = []
+        prompt = {
+            "class": "CASCADIA_HOSTING_WINDOW_CLASS", "hwnd": 2718, "title": "Codex",
+            "text": "Would you like to run the following command?\n$ echo CHECK\n"
+                    "› 1. Yes, proceed (y)\n2. No, and tell Codex what to do differently (esc)",
+        }
+
+        def desktop_timeout():
+            clock[0] += 0.8
+            return False
+
+        def send(hwnd):
+            sent_at.append(clock[0])
+            module.running = False
+            return True
+
+        def sleep(seconds):
+            clock[0] += seconds
+            if clock[0] > 5:
+                module.running = False
+
+        reader = unittest.mock.Mock()
+        reader.poll.side_effect = lambda: [prompt] if clock[0] >= 0.25 else []
+        with (
+            patch.object(module, "CodexTerminalReader", return_value=reader),
+            patch.object(module, "find_action_required_window", return_value=(None, "")),
+            patch.object(module, "find_codex_desktop_window", return_value=None),
+            patch.object(module, "read_desktop_allow_once", side_effect=desktop_timeout) as desktop_probe,
+            patch.object(module, "recovery_input_busy", return_value=False),
+            patch.object(module, "send_enter", side_effect=send),
+            patch.object(module.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(module.time, "sleep", side_effect=sleep),
+        ):
+            module.auto_enter_loop()
+        self.assertEqual(len(sent_at), 1)
+        self.assertLessEqual(sent_at[0] - 0.25, module.RECOVERY_POLL_SECONDS)
+        desktop_probe.assert_not_called()
+
+    def test_consecutive_approvals_do_not_sleep_after_each_enter(self):
+        module = load_module()
+        module.running = module.auto_confirm = True
+        clock = [0.0]
+        sent_at = []
+
+        def send(hwnd):
+            sent_at.append(clock[0])
+            if len(sent_at) == 3:
+                module.running = False
+            return True
+
+        def sleep(seconds):
+            clock[0] += seconds
+            if clock[0] > 5:
+                module.running = False
+
+        class Reader:
+            pending = False
+            number = 0
+
+            def request_scan(self):
+                self.pending = True
+                return True
+
+            def poll(self):
+                if not self.pending:
+                    return None
+                self.pending = False
+                self.number += 1
+                return [{"class": "CASCADIA_HOSTING_WINDOW_CLASS", "hwnd": 2718,
+                         "title": "Codex", "text":
+                         "Would you like to run the following command?\n"
+                         f"$ echo CHECK_{self.number}\n› 1. Yes, proceed (y)\n"
+                         "2. No, and tell Codex what to do differently (esc)"}]
+
+            def close(self):
+                pass
+
+        with (
+            patch.object(module, "CodexTerminalReader", return_value=Reader()),
+            patch.object(module, "find_action_required_window", return_value=(None, "")),
+            patch.object(module, "find_codex_desktop_window", return_value=None),
+            patch.object(module, "read_desktop_allow_once", return_value=False),
+            patch.object(module, "recovery_input_busy", return_value=False),
+            patch.object(module, "send_enter", side_effect=send),
+            patch.object(module.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(module.time, "sleep", side_effect=sleep),
+        ):
+            module.auto_enter_loop()
+        self.assertEqual(len(sent_at), 3)
+        self.assertLessEqual(max(b - a for a, b in zip(sent_at, sent_at[1:], strict=False)),
+                             module.RECOVERY_POLL_SECONDS + module.LOOP_SECONDS)
 
     def test_failed_recovery_delivery_does_not_block_the_next_retry_tick(self):
         module = load_module()

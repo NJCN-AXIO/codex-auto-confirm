@@ -25,7 +25,7 @@ def load_module():
 
 
 class ReleaseIntegrationTests(unittest.TestCase):
-    def test_auth_pool_retries_at_five_seconds_then_respects_working_barrier(self):
+    def test_503_retries_at_three_seconds_then_respects_working_barrier(self):
         module = load_module()
         trackers = {}
         sender = Mock(return_value=True)
@@ -33,25 +33,20 @@ class ReleaseIntegrationTests(unittest.TestCase):
             "class": "CASCADIA_HOSTING_WINDOW_CLASS", "hwnd": 927,
             "title": "Codex", "text": "OpenAI Codex\n" + AUTH_ERROR,
         }
-        for now, count in ((0.0, 1), (4.9, 1), (5.0, 2), (10.0, 3)):
+        for now, count in ((0.0, 1), (2.9, 1), (3.0, 2), (6.0, 3)):
             with patch.object(module.time, "monotonic", return_value=now):
                 module.process_codex_recovery_snapshots_multi([error], trackers, sender)
-            self.assertEqual(sender.call_count, count)
-        reconnecting = {**error, "text": "OpenAI Codex\nReconnecting... 2/5\n" + AUTH_ERROR}
-        for now, current, count in ((12.0, reconnecting, 3), (12.1, error, 3), (15.0, error, 4)):
-            with patch.object(module.time, "monotonic", return_value=now):
-                module.process_codex_recovery_snapshots_multi([current], trackers, sender)
             self.assertEqual(sender.call_count, count)
         working = {**error, "text": error["text"] + "\nWorking (12s • esc to interrupt)"}
         module.process_codex_recovery_snapshots_multi([working], trackers, sender)
         with patch.object(module.time, "monotonic", return_value=30.0):
             module.process_codex_recovery_snapshots_multi([error], trackers, sender)
-        self.assertEqual(sender.call_count, 4)
+        self.assertEqual(sender.call_count, 3)
 
     def test_auth_pool_draft_cannot_enable_retry_of_an_ordinary_503(self):
         module = load_module()
         text = "■ unexpected status 503 Service Unavailable\n› auth_unavailable"
-        self.assertFalse(module._auth_unavailable_pool_error(text))
+        self.assertTrue(module._terminal_draft_visible(text))
 
     def test_historical_auth_error_cannot_enable_retries_for_newer_errors(self):
         for latest, signature in (("■ 429 Too Many Requests", "http-429"),
@@ -82,9 +77,9 @@ class ReleaseIntegrationTests(unittest.TestCase):
         post.assert_called_once()
         hwnd, messages = post.call_args.args
         self.assertEqual(hwnd, 927)
-        self.assertEqual("".join(chr(key) for msg, key, _ in messages[:-3]), "continue")
-        self.assertEqual([msg for msg, _, _ in messages[-3:]],
-                         [module.WM_KEYDOWN, module.WM_CHAR, module.WM_KEYUP])
+        self.assertEqual("".join(chr(key) for msg, key, _ in messages[:-2]), "continue")
+        self.assertEqual([msg for msg, _, _ in messages[-2:]],
+                         [module.WM_KEYDOWN, module.WM_KEYUP])
 
     def test_frozen_helper_uses_extracted_bundle(self):
         with patch.object(sys, "frozen", True, create=True), patch.object(sys, "_MEIPASS", "C:/bundle", create=True):
