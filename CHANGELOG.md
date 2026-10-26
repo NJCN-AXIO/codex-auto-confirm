@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.3.5] - 2026-10-26
+
+### Fixed / 修复
+
+- Accept the optional exact `(p)` shortcut after a command scope's closing
+  backtick. The shortcut is display metadata, while any `(p)` inside the
+  command remains part of its identity. Unknown trailing text remains rejected.
+- Distinguish consecutive clipped requests through the existing scope owner;
+  preserve redraw deduplication, full-body upgrades, ambiguity and post budgets.
+- 修复完整命令范围带 `(p)` 时解析失败，导致第二个不同 YES/NO 请求不再自动回车。
+
+### Verification / 验收
+
+- Seven added scope regressions and all 303 installed Windows tests passed.
+  Exact captured replay changes from one send to two for two different menus.
+- Old-owner real terminal: first CR received, second menu timed out. Final-owner
+  real terminal: 3/3 single CRs, no extras, maximum 0.312 s; no Working/empty
+  composer clear between menus. The fixture executed no commands or MCP calls.
+  Delivery preserved foreground; this is bounded acceptance, not an overnight soak.
+
+[1.3.5]: https://github.com/NJCN-AXIO/codex-auto-confirm/releases/tag/v1.3.5
+
 ## [1.3.4] - 2026-10-25
 
 ### Fixed / 修复

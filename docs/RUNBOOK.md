@@ -1,5 +1,34 @@
 # Runbook — Codex Auto Confirm
 
+## v1.3.5: clipped command scope with shortcut
+
+A captured pair of different approvals had no `$ command` body, but each had
+a complete permanent-option scope ending in a closing backtick plus `(p)`.
+The old scope parser rejected that shortcut, so the existing anonymous episode
+latch suppressed the second request. The exact-record replay reproduced one
+send for two requests; a real isolated terminal received its first CR and then
+timed out on the second menu without an intervening clear.
+
+The same `_approval_command_scope` owner now accepts only an optional exact
+`(p)` after the final closing backtick. The command itself, including internal
+`(p)` text and case, retains its existing identity. No new input path is added.
+Malformed scopes, unknown suffixes, permanent/denial selections, drafts,
+ambiguous panes, physical input, shared-scope ambiguity and the three-post
+request limit remain guarded.
+
+Independent review passed. Seven added tests cover distinct/old request
+redraws, shortcut removal, full-body upgrades, wrapped/padded CRLF scopes,
+suffix rejection, input guards, shared-scope ambiguity and the original budget.
+All 303 installed Windows tests passed. The final real UIA/original sender
+receiver got 3/3 single CRs, no extras, maximum 0.312 s, without Working or empty
+composer clears between menus. The fixture executed no commands/MCP calls.
+Delivery preserved foreground; startup itself can activate a test window.
+
+Journal pending duration does not prove that one unchanged menu occupied the
+entire period. Raw journal/terminal captures remain private. Correlate HWND/time
+on recurrence; never reset the worker or post repeatedly to bypass its budget.
+For updates, exit the old monitor before starting the new source/EXE.
+
 ## v1.3.4: native approval after Running
 
 A production capture showed a complete selected `Yes, proceed` menu after

@@ -24,6 +24,10 @@ def full(command, scope=None):
     return "Would you like to run the following command?\n$ " + command + "\n" + clipped(scope or command)
 
 
+def shortcut(scope, **fields):
+    return clipped(scope, **fields).replace("`" + scope + "`", "`" + scope + "` (p)")
+
+
 def snapshot(text, hwnd=901):
     return {"class": "CASCADIA_HOSTING_WINDOW_CLASS", "hwnd": hwnd,
             "title": "[!] Action Required | Codex", "text": text}
@@ -125,6 +129,77 @@ class ClippedMenuTests(unittest.TestCase):
         self.scan(clipped(scope))
         self.scan(clipped("\n  ".join(textwrap.wrap(scope, width=21))))
         self.sender.assert_called_once_with(901)
+
+    def test_distinct_clipped_requests_with_shortcut_each_receive_enter(self):
+        self.assertEqual(self.scan(shortcut("echo FIRST")), [(901, True)])
+        self.assertEqual(self.scan(shortcut("echo SECOND")), [(901, True)])
+        self.assertEqual(self.scan(shortcut("echo FIRST")), [])
+        self.assertEqual(self.sender.call_count, 2)
+
+    def test_shortcut_redraw_and_full_body_keep_one_delivery_and_budget(self):
+        command = "echo FIRST"
+        self.scan(shortcut(command))
+        self.scan(clipped(command))
+        self.scan(full(command))
+        self.sender.assert_called_once_with(901)
+        self.assertEqual(self.trackers[901].delivery_attempts, 1)
+        self.assertEqual(self.trackers[901].last_delivery_at, 0.0)
+        for now, expected in ((2.1, False), (2.4, True), (4.5, False), (4.8, True),
+                              (7.0, False), (7.3, False), (20.0, False)):
+            self.clock.return_value = now
+            self.assertEqual(bool(self.scan(shortcut(command))), expected)
+        self.assertEqual(self.sender.call_count, 3)
+
+    def test_shortcut_scope_wrapping_padding_and_case_remain_stable(self):
+        scope = "python -c CaseSensitive0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        wrapped = "\n    ".join(textwrap.wrap(scope, width=19))
+        text = "\r\n\r\n".join(line.ljust(129) for line in shortcut(wrapped).splitlines())
+        self.scan(full("echo FIRST"))
+        self.assertEqual(self.scan(text), [(901, True)])
+        self.assertEqual(self.scan(clipped(scope)), [])
+        self.assertEqual(self.scan(shortcut(scope.lower())), [(901, True)])
+        self.assertEqual(self.sender.call_count, 3)
+
+    def test_shortcut_is_not_part_of_the_command_scope(self):
+        scope = "python -c print('(p)')"
+        self.assertEqual(self.module._approval_command_scope(shortcut(scope)),
+                         self.module._approval_command_scope(clipped(scope)))
+        self.assertIn("'(p)'", self.module._approval_command_scope(shortcut(scope)))
+
+    def test_unknown_or_incomplete_shortcut_tails_cannot_identify_a_new_request(self):
+        for text in (shortcut("echo NEXT").replace("` (p)", " (p)"),
+                     shortcut("echo NEXT").replace("(p)", "(x)"),
+                     shortcut("echo NEXT").replace("(p)", "(p) extra"),
+                     shortcut("echo NEXT").replace("(p)", "(p"),
+                     shortcut("echo NEXT", footer=False),
+                     shortcut("echo NEXT", selected="2"),
+                     shortcut("echo NEXT", selected="none")):
+            with self.subTest(text=text):
+                self.trackers.clear()
+                self.sender.reset_mock()
+                self.scan(full("echo FIRST"))
+                self.assertIsNone(self.module._approval_command_scope(text))
+                self.assertEqual(self.scan(text), [])
+                self.sender.assert_called_once_with(901)
+
+    def test_shortcut_uses_existing_draft_pane_and_activity_guards(self):
+        text = shortcut("echo FIRST")
+        self.assertEqual(self.scan("› Please explain this menu\n" + text), [])
+        self.assertEqual(self.module.process_codex_approval_snapshots_multi(
+            [{**snapshot(text), "input_ambiguous": True}], self.trackers, self.sender), [])
+        with patch.object(self.module, "recovery_input_busy", return_value=True):
+            self.assertEqual(self.scan(text), [])
+        self.sender.assert_not_called()
+
+    def test_shortcut_scope_stays_ambiguous_for_two_full_commands(self):
+        scope = "python"
+        self.scan(full("python FIRST.py", scope))
+        self.scan(full("python SECOND.py", scope))
+        self.clock.return_value = 10.0
+        for _ in range(3):
+            self.assertEqual(self.scan(shortcut(scope)), [])
+            self.clock.return_value += 0.3
+        self.assertEqual(self.sender.call_count, 2)
 
 
 if __name__ == "__main__":

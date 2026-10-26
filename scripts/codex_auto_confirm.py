@@ -9,7 +9,7 @@ current error snapshot. Window titles alone never authorize an Enter keypress.
 
 from __future__ import annotations
 
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 
 import copy
 import ctypes
@@ -1853,7 +1853,7 @@ def _approval_command_scope(text: str) -> str | None:
                    for row in lines[end:]):
             return None
         option = "\n".join(lines[index:end]).strip()
-        match = re.fullmatch(prefix + r"`(.+)`\s*", option, re.IGNORECASE | re.DOTALL)
+        match = re.fullmatch(prefix + r"`(.+)`(?:\s+\(p\))?\s*", option, re.IGNORECASE | re.DOTALL)
         if match:
             # Whitespace-insensitive matching is conservative deduplication:
             # soft wrapping must not create a new request. Keep command case.

@@ -30,7 +30,17 @@ Draft text, recent typing, an explicit interruption, or an ambiguous pane blocks
 > only run the CLI flow end-to-end; the desktop path is included as-is and is
 > community-tested at best.
 
-## v1.3.4 / 本次更新
+## v1.3.5 / 本次更新
+
+- Recognizes the exact `(p)` shortcut after a complete command-scope option,
+  so consecutive clipped approvals retain distinct request identities.
+- 修复另一个窗口连续审批漏回车：命令范围末尾的 `(p)` 快捷键不再导致请求身份丢失。
+  保留现有草稿保护、读回间隔和每请求三次投递上限。
+- Real-terminal verification: the old owner timed out on the second menu;
+  the repaired owner received 3/3 single CRs without an intervening Working clear.
+  These are bounded tests; no guarantee of every future prompt is made.
+
+### v1.3.4 / 先前更新
 
 - Fixes a further missed YES/NO confirmation when a native approval heading
   is indented under `Running` after previously submitted input.
